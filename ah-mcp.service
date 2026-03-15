@@ -1,0 +1,14 @@
+[Unit]
+Description=Albert Heijn MCP Server
+After=network.target
+
+[Service]
+User=ah-mcp
+EnvironmentFile=/home/ah-mcp/.env
+ExecStart=/usr/local/bin/ah-mcp --transport sse
+WorkingDirectory=/home/ah-mcp
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

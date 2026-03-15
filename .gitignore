@@ -1,0 +1,13 @@
+# Secrets and tokens — never commit these
+.env
+*.json
+
+# Compiled binaries
+ah-mcp
+ah-mcp.exe
+
+# macOS
+.DS_Store
+
+# Go build artifacts
+/vendor/
