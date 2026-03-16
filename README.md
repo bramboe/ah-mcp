@@ -4,6 +4,36 @@
 
 A [Model Context Protocol](https://modelcontextprotocol.io) server for the Albert Heijn (🇳🇱) supermarket API. Works with any MCP-compatible client.
 
+## What you can do
+
+Things the AH app and website can't do — but your AI assistant can:
+
+**Smart shopping**
+> *"Check my shopping list and add everything that's currently on bonus to my cart"*
+
+> *"I want to make spaghetti bolognese for 4 people — find the ingredients at AH and add them to my list"*
+
+> *"Find me a healthy snack that's on bonus and costs less than €2"*
+
+**Know your habits**
+> *"What do I order most often? Show me the top 10 and check which ones are on bonus this week"*
+
+> *"What did I spend on groceries last month based on my kassabonnen?"*
+
+> *"I usually buy melk, kaas, and brood — am I missing any of them in my current cart?"*
+
+**Last-minute deals**
+> *"What vandaag-af items are available near postal code 1234AB? Anything worth getting?"*
+
+> *"Are there any bonus deals on dairy products this week?"*
+
+**Cart management**
+> *"Clear my cart and rebuild it from my shopping list"*
+
+> *"I'm over budget — which items in my cart are not on bonus and could be swapped for cheaper alternatives?"*
+
+---
+
 ## What this is
 
 **ah-mcp** exposes the Albert Heijn mobile API as MCP tools so your AI assistant can:
@@ -12,7 +42,6 @@ A [Model Context Protocol](https://modelcontextprotocol.io) server for the Alber
 - Browse last-chance / vandaag-af clearance items (store-specific)
 - Manage your online shopping cart (view, add, update, remove, clear)
 - View order history, order details, and frequently bought items
-- Edit a submitted delivery order before its closing time
 - Read and update your shopping list and named favourite lists
 - Move your shopping list directly to your online order
 - View in-store receipts (kassabonnen) with full item details
