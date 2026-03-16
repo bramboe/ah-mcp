@@ -3,56 +3,31 @@ name: Release
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - 'v*'
 
 permissions:
   contents: write
 
 jobs:
   release:
-    name: Build & release binaries
     runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-            suffix: ""
-          - goos: linux
-            goarch: arm64
-            suffix: ""
-          - goos: darwin
-            goarch: amd64
-            suffix: ""
-          - goos: darwin
-            goarch: arm64
-            suffix: ""
-          - goos: windows
-            goarch: amd64
-            suffix: ".exe"
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version-file: go.mod
 
-      - name: Build binary
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: "0"
+      - name: Build binaries
         run: |
-          NAME="ah-mcp-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}"
-          go build -trimpath -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
-            -o "dist/${NAME}" .
-          echo "Built: dist/${NAME}"
+          mkdir -p dist
+          GOOS=linux   GOARCH=amd64 go build -ldflags="-s -w" -o dist/ah-mcp-linux-amd64   .
+          GOOS=linux   GOARCH=arm64 go build -ldflags="-s -w" -o dist/ah-mcp-linux-arm64   .
+          GOOS=darwin  GOARCH=amd64 go build -ldflags="-s -w" -o dist/ah-mcp-darwin-amd64  .
+          GOOS=darwin  GOARCH=arm64 go build -ldflags="-s -w" -o dist/ah-mcp-darwin-arm64  .
+          GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/ah-mcp-windows-amd64.exe .
 
-      - name: Upload binaries to release
+      - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
