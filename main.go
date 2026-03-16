@@ -22,7 +22,13 @@ const (
 
 func main() {
 	transport := flag.String("transport", "sse", "Transport mode: 'sse' (HTTP/SSE) or 'stdio'")
+	remote := flag.Bool("remote", false, "Remote mode: disable auto browser-open on login (overridden by AH_REMOTE=true)")
 	flag.Parse()
+
+	// AH_REMOTE env var also enables remote mode.
+	if os.Getenv("AH_REMOTE") == "true" {
+		*remote = true
+	}
 
 	// Resolve config from environment.
 	callbackHost := envOr("AH_CALLBACK_HOST", defaultCallbackHost)
@@ -32,12 +38,12 @@ func main() {
 
 	// Ensure token directory exists with secure permissions.
 	if err := ensureTokenDir(tokensPath); err != nil {
-		fmt.Fprintf(os.Stderr, "[ah-mcp] Warning: could not create token directory: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] Warning: could not create token directory: %v\n", err)
 	}
 
 	// Build MCP server.
 	s := server.NewMCPServer(
-		"ah-mcp",
+		"Albert Heijn",
 		version,
 		server.WithLogging(),
 	)
@@ -47,6 +53,7 @@ func main() {
 		TokensPath:   tokensPath,
 		CallbackHost: callbackHost,
 		CallbackPort: callbackPort,
+		RemoteMode:   *remote,
 		GetClient:    GetClient,
 		ReloadClient: ReloadClient,
 		IsAuthenticated: func() bool {
@@ -72,10 +79,10 @@ func main() {
 
 	switch *transport {
 	case "stdio":
-		fmt.Fprintln(os.Stderr, "[ah-mcp] Starting in stdio mode")
+		fmt.Fprintln(os.Stderr, "[Albert Heijn MCP] Starting in stdio mode")
 		stdioSrv := server.NewStdioServer(s)
 		if err := stdioSrv.Listen(ctx, os.Stdin, os.Stdout); err != nil {
-			fmt.Fprintf(os.Stderr, "[ah-mcp] stdio server error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] stdio server error: %v\n", err)
 			os.Exit(1)
 		}
 	case "sse", "":
@@ -83,14 +90,14 @@ func main() {
 		// Base URL advertised to clients. Defaults to localhost for local use;
 		// override AH_MCP_BASE_URL for remote deployments behind a reverse proxy.
 		baseURL := envOr("AH_MCP_BASE_URL", fmt.Sprintf("http://localhost:%d", mcpPort))
-		fmt.Fprintf(os.Stderr, "[ah-mcp] Starting SSE server on %s (base URL: %s)\n", addr, baseURL)
+		fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] Starting SSE server on %s (base URL: %s)\n", addr, baseURL)
 		httpSrv := server.NewSSEServer(s, server.WithBaseURL(baseURL))
 		if err := httpSrv.Start(addr); err != nil {
-			fmt.Fprintf(os.Stderr, "[ah-mcp] SSE server error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] SSE server error: %v\n", err)
 			os.Exit(1)
 		}
 	default:
-		fmt.Fprintf(os.Stderr, "[ah-mcp] Unknown transport %q. Use 'sse' or 'stdio'.\n", *transport)
+		fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] Unknown transport %q. Use 'sse' or 'stdio'.\n", *transport)
 		os.Exit(1)
 	}
 }

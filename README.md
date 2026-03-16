@@ -6,35 +6,39 @@ A [Model Context Protocol](https://modelcontextprotocol.io) server for the Alber
 
 **ah-mcp** exposes the Albert Heijn mobile API as MCP tools so your AI assistant can:
 
-- Search products and check bonus offers
+- Search products, check bonus offers, and drill into promotion groups
 - Browse last-chance / vandaag-af clearance items (store-specific)
-- View your order history and frequently bought items
-- Read and update your shopping list
-- Fetch your member profile
+- Manage your online shopping cart (view, add, update, remove, clear)
+- View order history, order details, and frequently bought items
+- Edit a submitted delivery order before its closing time
+- Read and update your shopping list and named favourite lists
+- Move your shopping list directly to your online order
+- View in-store receipts (kassabonnen) with full item details
+- Fetch your member profile and find nearby stores
 
 Authentication is handled entirely through a reverse-proxy OAuth flow — no tokens are ever stored in the project directory.
 
 ## Compatibility
 
-Tested with:
-
-| Client | Transport |
-|---|---|
-| Claude Desktop | stdio |
-| Claude.ai (web) | SSE |
-| Windsurf | stdio |
-| Cursor | stdio |
-| ChatGPT Desktop | SSE |
+| Client | Transport | Status |
+|---|---|---|
+| Claude Desktop | stdio | ✅ tested |
+| Claude Desktop | SSE | 🔲 untested |
+| Claude.ai (web) | SSE | 🔲 untested |
+| Windsurf | stdio | 🔲 untested |
+| Cursor | stdio | 🔲 untested |
+| ChatGPT Desktop | SSE | 🔲 untested |
 
 ## Quick start (pre-built binary)
 
 1. Download the latest binary from Releases.
 2. Run it:
    ```bash
-   ./ah-mcp --transport stdio   # for local clients
-   ./ah-mcp --transport sse     # for web / remote clients (default)
+   ./ah-mcp --transport stdio            # local client — browser opens automatically on login
+   ./ah-mcp --transport sse              # local SSE — browser opens automatically on login
+   ./ah-mcp --transport sse --remote     # remote server — login returns a URL instead
    ```
-3. Ask your AI assistant to call **`ah_login`** and follow the URL it returns.
+3. Ask your AI assistant to call **`ah_login`**. In local mode the browser opens automatically; in remote mode the assistant returns a URL for you to open.
 
 ## Build from source
 
@@ -54,6 +58,7 @@ Requires Go 1.23+.
 | `AH_CALLBACK_PORT` | `9876` | Port the temporary OAuth reverse-proxy server listens on. |
 | `AH_MCP_PORT` | `3000` | Port for the MCP HTTP/SSE server (`--transport sse`). |
 | `AH_TOKENS_PATH` | `~/.config/ah-mcp/tokens.json` | Override the XDG token storage path. Directory is created automatically (mode `0700`). File is written with mode `0600`. |
+| `AH_REMOTE` | `false` | Set to `true` to enable remote mode (same as `--remote` flag). Disables automatic browser opening on login. |
 
 Copy `.env.example` to `.env` and uncomment lines you want to change.
 
@@ -73,15 +78,24 @@ Override with `AH_TOKENS_PATH` if needed.
 
 ## First login
 
-Just call the **`ah_login`** tool from your AI assistant:
+Just call the **`ah_login`** tool from your AI assistant.
 
+**Local mode** (default — browser opens and the call blocks until login completes):
+```
+User: log in to ah
+Assistant: calls ah_login  ← browser opens automatically
+→ (you complete login in browser)
+→ "Login successful! Connected as Jan Jansen."  ← single call, no confirmation needed
+```
+
+**Remote mode** (`--remote` flag or `AH_REMOTE=true` — URL returned for manual opening):
 ```
 User: log in to ah
 Assistant: calls ah_login
 → "Please open this URL in your browser to log in to Albert Heijn:
-   http://localhost:9876/login?...
-   Waiting for you to complete login (timeout: 5 minutes)..."
-→ (after you log in)
+   https://ah-mcp.example.com/login?..."
+→ (complete login in browser)
+→ (call ah_login again)
 → "Login successful! Connected as Jan Jansen."
 ```
 
@@ -97,7 +111,7 @@ No configuration needed for local use.
 
 ### Claude Desktop — SSE or stdio
 
-**SSE** (remote server):
+**SSE** (remote server — run with `--remote` on the server side):
 
 ```json
 {
@@ -154,6 +168,7 @@ Add to your MCP config (usually `~/.codeium/windsurf/mcp_config.json` or `~/.cur
    ```env
    AH_CALLBACK_HOST=https://ah-mcp.example.com
    AH_MCP_PORT=3000
+   AH_REMOTE=true
    ```
 4. Install and start the service:
    ```bash
@@ -167,17 +182,74 @@ Tokens are stored automatically at `/home/ah-mcp/.config/ah-mcp/tokens.json` —
 
 ## Available tools
 
+### Authentication
+
 | Tool | Description |
 |---|---|
-| `ah_login` | Authenticate with Albert Heijn via browser OAuth |
-| `ah_search_products` | Search products by keyword |
-| `ah_get_bonus_offers` | List current bonus/promotional offers |
-| `ah_get_last_chance_items` | Vandaag-af / clearance items from a store |
-| `ah_get_order_history` | Recent online orders |
-| `ah_get_frequent_items` | Products you order most often |
-| `ah_get_shopping_list` | View your shopping list |
-| `ah_add_to_shopping_list` | Add items to your shopping list |
-| `ah_get_member_profile` | Your AH member profile |
+| `ah_login` | Log in via browser OAuth. First call returns a URL; call again after completing login. |
+| `ah_logout` | Delete stored tokens to log out or switch accounts. |
+
+### Products
+
+| Tool | Description |
+|---|---|
+| `ah_search_products` | Search products by keyword (Dutch terms preferred). |
+| `ah_search_products_filtered` | Search with optional `bonus=true` filter for on-sale items only. |
+| `ah_get_product` | Full detail for one product by ID. Add `include_nutritional_info=true` for calories, fat, protein, etc. |
+| `ah_get_bonus_offers` | All current bonus/promotional offers. Optional keyword filter. |
+| `ah_get_bonus_group_products` | All products in a specific bonus deal group (e.g. "2+1 gratis"). Use `segment_id` from `ah_get_bonus_offers`. |
+| `ah_get_last_chance_items` | Vandaag-af / clearance items from a specific store. |
+| `ah_search_stores` | Find AH stores near a postal code (or your registered address). |
+
+### Shopping cart (online order)
+
+| Tool | Description |
+|---|---|
+| `ah_get_cart` | View current online cart: items, quantities, total price. |
+| `ah_get_cart_summary` | Cart totals only: item count, price, discount, delivery cost. |
+| `ah_update_cart_item` | Set quantity for a product in the cart (0 removes it). |
+| `ah_remove_from_cart` | Remove a single product from the cart. |
+| `ah_clear_cart` | Remove all items from the cart. Requires `confirm=yes`. |
+
+### Order history & editing
+
+| Tool | Description |
+|---|---|
+| `ah_get_order_history` | Upcoming delivery orders with status and modifiable flag. |
+| `ah_get_past_orders` | Past/delivered orders. |
+| `ah_get_order_details` | Full item list for a specific past or upcoming order. |
+| `ah_get_frequent_items` | Products you order most often, ranked by frequency. |
+| `ah_reopen_order` | Unlock a submitted order for editing (before closing time). ⚠️ unconfirmed |
+| `ah_update_order_items` | Add/change/remove items in a reopened order. ⚠️ unconfirmed |
+| `ah_revert_order` | Resubmit a reopened order. **Always call this after `ah_reopen_order`.** ⚠️ unconfirmed |
+
+### Shopping list
+
+| Tool | Description |
+|---|---|
+| `ah_get_shopping_list` | View your shopping list with item names and IDs. |
+| `ah_add_to_shopping_list` | Add products by ID and quantity. |
+| `ah_add_free_text_to_shopping_list` | Add a free-text reminder (no product ID needed). |
+| `ah_remove_from_shopping_list` | Remove items by product ID or free-text name. |
+| `ah_check_shopping_list_item` | Tick or untick an item on the list. ⚠️ broken (listItemId=0 in API) |
+| `ah_clear_shopping_list` | Remove all items from the list. Requires `confirm=yes`. |
+| `ah_shopping_list_to_order` | Move all unchecked product items from your list to the cart. |
+| `ah_get_favorite_lists` | List all named favourite lists with IDs. |
+| `ah_add_to_favorite_list` | Add products to a named favourite list. |
+| `ah_remove_from_favorite_list` | Remove products from a named favourite list. |
+
+### Receipts
+
+| Tool | Description |
+|---|---|
+| `ah_get_receipts` | List recent in-store receipts (kassabonnen) with dates and totals. |
+| `ah_get_receipt_details` | Full item breakdown, discounts, and payment method for one receipt. |
+
+### Member
+
+| Tool | Description |
+|---|---|
+| `ah_get_member_profile` | Your name, email, and bonus card number. |
 
 ## Troubleshooting
 
@@ -188,15 +260,16 @@ Change via `AH_CALLBACK_PORT` or `AH_MCP_PORT` in your `.env`.
 The OAuth flow timed out. Call `ah_login` again and complete the browser flow faster.
 
 **Token issues / expired session**
-Delete `tokens.json` and call `ah_login` again.
-On Linux: `rm ~/.config/ah-mcp/tokens.json`
-On macOS: `rm ~/Library/Application\ Support/ah-mcp/tokens.json`
+Call `ah_logout` then `ah_login`. Or delete `tokens.json` manually:
+- Linux: `rm ~/.config/ah-mcp/tokens.json`
+- macOS: `rm ~/Library/Application\ Support/ah-mcp/tokens.json`
+- Windows: `del %AppData%\ah-mcp\tokens.json`
 
 **Last-chance items require a store**
 `ah_get_last_chance_items` needs a store ID or postal code — bargain items are store-specific. Provide `store_id` or `postal_code` as a parameter.
 
 **"Not logged in" error**
-Run `ah_login` first. The server does not auto-open a browser; you must open the URL manually.
+Run `ah_login` first. In local mode the browser opens automatically; in remote mode (`--remote` / `AH_REMOTE=true`) open the URL the assistant returns.
 
 ## Acknowledgements
 

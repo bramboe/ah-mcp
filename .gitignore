@@ -5,6 +5,8 @@
 # Compiled binaries
 ah-mcp
 ah-mcp.exe
+ah-mcp.exe~
+/dist/
 
 # macOS
 .DS_Store

@@ -11,6 +11,7 @@ import (
 // RegisterMemberTools registers member profile MCP tools.
 func RegisterMemberTools(s *server.MCPServer, deps Deps) {
 	tool := mcp.NewTool("ah_get_member_profile",
+		mcp.WithTitleAnnotation("Albert Heijn: Member Profile"),
 		mcp.WithDescription(
 			"Get your Albert Heijn member profile. "+
 				"Returns name, email, member_since, and bonus_card_number (last 4 digits only).",
