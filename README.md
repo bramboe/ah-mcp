@@ -88,6 +88,7 @@ Requires Go 1.23+.
 | `AH_CALLBACK_HOST` | `http://localhost:9876` | Base URL for the OAuth proxy. Users open this URL in their browser during login. Override to your server's public URL for remote deployments. |
 | `AH_CALLBACK_PORT` | `9876` | Port the temporary OAuth reverse-proxy server listens on. |
 | `AH_MCP_PORT` | `3000` | Port for the MCP HTTP/SSE server (`--transport sse`). |
+| `AH_MCP_BASE_URL` | `http://localhost:3000` | Public base URL advertised to MCP clients in the SSE `endpoint` event. **Must be set for remote deployments** — otherwise clients receive a `localhost` URL they cannot reach. Example: `http://myserver.example.com:3000` |
 | `AH_TOKENS_PATH` | `~/.config/ah-mcp/tokens.json` | Override the XDG token storage path. Directory is created automatically (mode `0700`). File is written with mode `0600`. |
 | `AH_REMOTE` | `false` | Set to `true` to enable remote mode (same as `--remote` flag). Disables automatic browser opening on login. |
 
@@ -198,6 +199,7 @@ Add to your MCP config (usually `~/.codeium/windsurf/mcp_config.json` or `~/.cur
 3. Create `/home/ah-mcp/.env`:
    ```env
    AH_CALLBACK_HOST=https://ah-mcp.example.com
+   AH_MCP_BASE_URL=https://ah-mcp.example.com
    AH_MCP_PORT=3000
    AH_REMOTE=true
    ```
