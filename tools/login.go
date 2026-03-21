@@ -53,6 +53,10 @@ type Deps struct {
 	RefreshIfNeeded func(ctx context.Context) error
 	// Server is the MCP server instance (kept for future use).
 	Server *server.MCPServer
+	// ServerVersion is the build version of the MCP server binary.
+	ServerVersion string
+	// AppieVersion is the version of the appie-go library in use.
+	AppieVersion string
 }
 
 func notAuthResult() *mcp.CallToolResult {

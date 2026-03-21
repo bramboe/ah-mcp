@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +20,20 @@ import (
 // version is set at build time via -ldflags="-X main.version=v1.2.3"
 var version = "dev"
 
+// appieVersion returns the version of github.com/gwillem/appie-go from build info.
+func appieVersion() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+	for _, dep := range info.Deps {
+		if dep.Path == "github.com/gwillem/appie-go" {
+			return dep.Version
+		}
+	}
+	return "unknown"
+}
+
 const (
 	defaultCallbackHost = "http://localhost:9876"
 	defaultCallbackPort = 9876
@@ -26,7 +41,7 @@ const (
 )
 
 func main() {
-	transport := flag.String("transport", "sse", "Transport mode: 'sse' (HTTP/SSE) or 'stdio'")
+	transport := flag.String("transport", "sse", "Transport mode: 'sse', 'streamable-http', or 'stdio'")
 	remote := flag.Bool("remote", false, "Remote mode: disable auto browser-open on login (overridden by AH_REMOTE=true)")
 	flag.Parse()
 
@@ -55,10 +70,12 @@ func main() {
 
 	// Build dependency bundle.
 	deps := tools.Deps{
-		TokensPath:   tokensPath,
-		CallbackHost: callbackHost,
-		CallbackPort: callbackPort,
-		RemoteMode:   *remote,
+		TokensPath:    tokensPath,
+		CallbackHost:  callbackHost,
+		CallbackPort:  callbackPort,
+		RemoteMode:    *remote,
+		ServerVersion: version,
+		AppieVersion:  appieVersion(),
 		GetClient:    GetClient,
 		ReloadClient: ReloadClient,
 		IsAuthenticated: func() bool {
@@ -79,12 +96,13 @@ func main() {
 	tools.RegisterOrderTools(s, deps)
 	tools.RegisterBasketTools(s, deps)
 	tools.RegisterMemberTools(s, deps)
+	tools.RegisterInfoTool(s, deps)
 
 	ctx := context.Background()
 
 	switch *transport {
 	case "stdio":
-		fmt.Fprintln(os.Stderr, "[Albert Heijn MCP] Starting in stdio mode")
+		fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] Starting in stdio mode (version: %s)\n", version)
 		stdioSrv := server.NewStdioServer(s)
 		if err := stdioSrv.Listen(ctx, os.Stdin, os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] stdio server error: %v\n", err)
@@ -92,12 +110,10 @@ func main() {
 		}
 	case "sse", "":
 		addr := fmt.Sprintf(":%d", mcpPort)
-		// Base URL advertised to clients. Defaults to localhost for local use;
-		// override AH_MCP_BASE_URL for remote deployments behind a reverse proxy.
 		baseURL := envOr("AH_MCP_BASE_URL", fmt.Sprintf("http://localhost:%d", mcpPort))
 		mcpToken := os.Getenv("AH_MCP_TOKEN")
-		fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] Starting SSE server on %s (base URL: %s, auth: %v)\n",
-			addr, baseURL, mcpToken != "")
+		fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] Starting SSE server on %s (version: %s, base URL: %s, auth: %v)\n",
+			addr, version, baseURL, mcpToken != "")
 		sseSrv := server.NewSSEServer(s, server.WithBaseURL(baseURL), server.WithKeepAlive(true), server.WithKeepAliveInterval(5*time.Second))
 		var handler http.Handler = sseSrv
 		if mcpToken != "" {
@@ -108,8 +124,27 @@ func main() {
 			fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] SSE server error: %v\n", err)
 			os.Exit(1)
 		}
+	case "streamable-http":
+		addr := fmt.Sprintf(":%d", mcpPort)
+		baseURL := envOr("AH_MCP_BASE_URL", fmt.Sprintf("http://localhost:%d", mcpPort))
+		mcpToken := os.Getenv("AH_MCP_TOKEN")
+		fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] Starting Streamable HTTP server on %s (version: %s, base URL: %s, auth: %v)\n",
+			addr, version, baseURL, mcpToken != "")
+		httpSrv := server.NewStreamableHTTPServer(s,
+			server.WithEndpointPath("/mcp"),
+			server.WithHeartbeatInterval(5*time.Second),
+		)
+		var handler http.Handler = httpSrv
+		if mcpToken != "" {
+			handler = simpleAuthMiddleware(mcpToken, httpSrv)
+		}
+		httpServer := &http.Server{Addr: addr, Handler: handler}
+		if err := httpServer.ListenAndServe(); err != nil {
+			fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] Streamable HTTP server error: %v\n", err)
+			os.Exit(1)
+		}
 	default:
-		fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] Unknown transport %q. Use 'sse' or 'stdio'.\n", *transport)
+		fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] Unknown transport %q. Use 'sse', 'streamable-http', or 'stdio'.\n", *transport)
 		os.Exit(1)
 	}
 }
@@ -209,4 +244,20 @@ func (sc *sessionCapture) Flush() {
 	if f, ok := sc.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// simpleAuthMiddleware checks every request for a bearer token or ?token= query param.
+// Used for streamable-http where each request is independent (no session tracking needed).
+func simpleAuthMiddleware(token string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "Bearer "+token {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.URL.Query().Get("token") == token {
+			next.ServeHTTP(w, r)
+			return
+		}
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	})
 }

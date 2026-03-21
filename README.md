@@ -65,9 +65,10 @@ Authentication is handled entirely through a reverse-proxy OAuth flow — no tok
 1. Download the latest binary from Releases.
 2. Run it:
    ```bash
-   ./ah-mcp --transport stdio            # local client — browser opens automatically on login
-   ./ah-mcp --transport sse              # local SSE — browser opens automatically on login
-   ./ah-mcp --transport sse --remote     # remote server — login returns a URL instead
+   ./ah-mcp --transport stdio              # local client — browser opens automatically on login
+   ./ah-mcp --transport sse                # local SSE — browser opens automatically on login
+   ./ah-mcp --transport sse --remote       # remote SSE server — login returns a URL instead
+   ./ah-mcp --transport streamable-http    # remote Streamable HTTP — more stable through proxies
    ```
 3. Ask your AI assistant to call **`ah_login`**. In local mode the browser opens automatically; in remote mode the assistant returns a URL for you to open.
 
@@ -87,8 +88,8 @@ Requires Go 1.23+.
 |---|---|---|
 | `AH_CALLBACK_HOST` | `http://localhost:9876` | Base URL for the OAuth proxy. Users open this URL in their browser during login. Override to your server's public URL for remote deployments. |
 | `AH_CALLBACK_PORT` | `9876` | Port the temporary OAuth reverse-proxy server listens on. |
-| `AH_MCP_PORT` | `3000` | Port for the MCP HTTP/SSE server (`--transport sse`). |
-| `AH_MCP_BASE_URL` | `http://localhost:3000` | Public base URL advertised to MCP clients in the SSE `endpoint` event. **Must be set for remote deployments** — otherwise clients receive a `localhost` URL they cannot reach. Example: `http://myserver.example.com:3000` |
+| `AH_MCP_PORT` | `3000` | Port for the MCP HTTP server (`--transport sse` or `--transport streamable-http`). |
+| `AH_MCP_BASE_URL` | `http://localhost:3000` | Public base URL advertised to MCP clients. **Must be set for remote deployments** — otherwise clients receive a `localhost` URL they cannot reach. Example: `https://myserver.example.com` |
 | `AH_TOKENS_PATH` | `~/.config/ah-mcp/tokens.json` | Override the XDG token storage path. Directory is created automatically (mode `0700`). File is written with mode `0600`. |
 | `AH_REMOTE` | `false` | Set to `true` to enable remote mode (same as `--remote` flag). Disables automatic browser opening on login. |
 | `AH_MCP_TOKEN` | *(unset)* | Secret token required to access the SSE server. When set, all requests must supply it via `Authorization: Bearer <token>` header or `?token=<token>` query parameter. Strongly recommended for public deployments. |
@@ -136,7 +137,18 @@ No configuration needed for local use.
 
 ## Client setup guides
 
-### Claude.ai (web) — SSE
+### Claude.ai (web) / Claude Desktop — Streamable HTTP (recommended for remote)
+
+Streamable HTTP uses regular HTTP requests instead of a persistent SSE connection — more stable through proxies and cloud infrastructure.
+
+1. Start the server with `--remote` on your remote machine:
+   ```bash
+   ./ah-mcp --transport streamable-http --remote
+   ```
+2. Open Claude → Settings → Connections → Add custom MCP server.
+3. Paste the URL: `https://your-server/mcp?token=your-secret-token`
+
+### Claude.ai (web) — SSE (legacy)
 
 1. Start the server: `./ah-mcp --transport sse` (exposes port 3000).
 2. Open Claude.ai → Settings → Connections → Add MCP server.
