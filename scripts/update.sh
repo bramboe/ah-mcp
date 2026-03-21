@@ -49,15 +49,33 @@ if [[ -x "$INSTALL_PATH" ]]; then
   echo "Current: $CURRENT → updating to $LATEST"
 fi
 
-# ── Download binary via GitHub API (works with private repos) ─────────────────
+# ── Fetch release metadata once ───────────────────────────────────────────────
+echo "Fetching release metadata..."
+RELEASE_JSON=$(curl -fsSL "${AUTH[@]}" \
+  "https://api.github.com/repos/$REPO/releases/tags/$LATEST")
+
+# Helper: extract asset ID by name using Python (always available)
+asset_id() {
+  echo "$RELEASE_JSON" | python3 -c "
+import sys, json
+assets = json.load(sys.stdin).get('assets', [])
+name = '$1'
+for a in assets:
+    if a['name'] == name:
+        print(a['id'])
+        break
+"
+}
+
+# ── Download binary ────────────────────────────────────────────────────────────
 BINARY_ASSET="ah-mcp-$ARCH"
 echo "Fetching release asset ID for $BINARY_ASSET..."
-ASSET_ID=$(curl -fsSL "${AUTH[@]}" \
-  "https://api.github.com/repos/$REPO/releases/tags/$LATEST" \
-  | grep -A1 "\"name\": \"$BINARY_ASSET\"" | grep '"id"' | head -1 | grep -o '[0-9]*')
+ASSET_ID=$(asset_id "$BINARY_ASSET")
 
 if [[ -z "$ASSET_ID" ]]; then
-  echo "ERROR: Could not find asset $BINARY_ASSET in release $LATEST"
+  echo "ERROR: Asset $BINARY_ASSET not found in release $LATEST"
+  echo "Available assets:"
+  echo "$RELEASE_JSON" | python3 -c "import sys,json; [print(' -', a['name']) for a in json.load(sys.stdin).get('assets',[])]"
   exit 1
 fi
 
@@ -74,21 +92,20 @@ if ! file /tmp/ah-mcp-new | grep -q "ELF"; then
   exit 1
 fi
 
-# ── Download service file via GitHub API ──────────────────────────────────────
+# ── Download service file ──────────────────────────────────────────────────────
 echo "Downloading service file..."
-SERVICE_ASSET_ID=$(curl -fsSL "${AUTH[@]}" \
-  "https://api.github.com/repos/$REPO/releases/tags/$LATEST" \
-  | grep -A1 '"name": "ah-mcp.service"' | grep '"id"' | head -1 | grep -o '[0-9]*')
+SERVICE_ASSET_ID=$(asset_id "ah-mcp.service")
 
 if [[ -n "$SERVICE_ASSET_ID" ]]; then
   curl -fsSL "${AUTH[@]}" -H "Accept: application/octet-stream" \
     -L -o /tmp/ah-mcp.service \
     "https://api.github.com/repos/$REPO/releases/assets/$SERVICE_ASSET_ID"
 else
-  # Fall back to raw content API
+  # Fall back to raw content API (base64 decode)
   curl -fsSL "${AUTH[@]}" \
     "https://api.github.com/repos/$REPO/contents/ah-mcp.service?ref=$LATEST" \
-    | grep '"content"' | cut -d'"' -f4 | base64 -d > /tmp/ah-mcp.service
+    | python3 -c "import sys,json,base64; print(base64.b64decode(json.load(sys.stdin)['content']).decode(),end='')" \
+    > /tmp/ah-mcp.service
 fi
 
 # ── Deploy ────────────────────────────────────────────────────────────────────
