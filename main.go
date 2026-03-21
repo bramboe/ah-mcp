@@ -97,7 +97,7 @@ func main() {
 		mcpToken := os.Getenv("AH_MCP_TOKEN")
 		fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] Starting SSE server on %s (base URL: %s, auth: %v)\n",
 			addr, baseURL, mcpToken != "")
-		sseSrv := server.NewSSEServer(s, server.WithBaseURL(baseURL))
+		sseSrv := server.NewSSEServer(s, server.WithBaseURL(baseURL), server.WithKeepAlive(true))
 		var handler http.Handler = sseSrv
 		if mcpToken != "" {
 			handler = tokenAuthMiddleware(mcpToken, sseSrv)
