@@ -225,11 +225,9 @@ func StartOAuthFlow(ctx context.Context, callbackHost string, callbackPort int, 
 
 		select {
 		case code := <-codeCh:
-			doneCh <- exchangeCodeAndSave(ctx, code, tokensPath)
+			doneCh <- exchangeCodeAndSave(context.Background(), code, tokensPath)
 		case <-time.After(oauthTimeout):
 			doneCh <- fmt.Errorf("OAuth flow timed out after 5 minutes")
-		case <-ctx.Done():
-			doneCh <- ctx.Err()
 		}
 	}()
 
