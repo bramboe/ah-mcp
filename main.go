@@ -4,11 +4,12 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
 
-	"github.com/mrserzhan/ah-mcp/tools"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/mrserzhan/ah-mcp/tools"
 )
 
 // version is set at build time via -ldflags="-X main.version=v1.2.3"
@@ -90,9 +91,16 @@ func main() {
 		// Base URL advertised to clients. Defaults to localhost for local use;
 		// override AH_MCP_BASE_URL for remote deployments behind a reverse proxy.
 		baseURL := envOr("AH_MCP_BASE_URL", fmt.Sprintf("http://localhost:%d", mcpPort))
-		fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] Starting SSE server on %s (base URL: %s)\n", addr, baseURL)
-		httpSrv := server.NewSSEServer(s, server.WithBaseURL(baseURL))
-		if err := httpSrv.Start(addr); err != nil {
+		mcpToken := os.Getenv("AH_MCP_TOKEN")
+		fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] Starting SSE server on %s (base URL: %s, auth: %v)\n",
+			addr, baseURL, mcpToken != "")
+		sseSrv := server.NewSSEServer(s, server.WithBaseURL(baseURL))
+		var handler http.Handler = sseSrv
+		if mcpToken != "" {
+			handler = tokenAuthMiddleware(mcpToken, sseSrv)
+		}
+		httpServer := &http.Server{Addr: addr, Handler: handler}
+		if err := httpServer.ListenAndServe(); err != nil {
 			fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] SSE server error: %v\n", err)
 			os.Exit(1)
 		}
@@ -123,4 +131,24 @@ func envIntOr(key string, def int) int {
 // ensureTokenDir creates the directory for the tokens file with mode 0700.
 func ensureTokenDir(tokensPath string) error {
 	return os.MkdirAll(parentDir(tokensPath), 0700)
+}
+
+// tokenAuthMiddleware rejects requests that do not carry the expected token.
+// The token is accepted as:
+//   - Authorization: Bearer <token>  header, OR
+//   - ?token=<token>                 query parameter
+func tokenAuthMiddleware(token string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check Authorization header.
+		if auth := r.Header.Get("Authorization"); auth == "Bearer "+token {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Check query parameter.
+		if r.URL.Query().Get("token") == token {
+			next.ServeHTTP(w, r)
+			return
+		}
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	})
 }

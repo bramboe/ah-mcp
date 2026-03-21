@@ -91,6 +91,7 @@ Requires Go 1.23+.
 | `AH_MCP_BASE_URL` | `http://localhost:3000` | Public base URL advertised to MCP clients in the SSE `endpoint` event. **Must be set for remote deployments** — otherwise clients receive a `localhost` URL they cannot reach. Example: `http://myserver.example.com:3000` |
 | `AH_TOKENS_PATH` | `~/.config/ah-mcp/tokens.json` | Override the XDG token storage path. Directory is created automatically (mode `0700`). File is written with mode `0600`. |
 | `AH_REMOTE` | `false` | Set to `true` to enable remote mode (same as `--remote` flag). Disables automatic browser opening on login. |
+| `AH_MCP_TOKEN` | *(unset)* | Secret token required to access the SSE server. When set, all requests must supply it via `Authorization: Bearer <token>` header or `?token=<token>` query parameter. Strongly recommended for public deployments. |
 
 Copy `.env.example` to `.env` and uncomment lines you want to change.
 
@@ -202,6 +203,7 @@ Add to your MCP config (usually `~/.codeium/windsurf/mcp_config.json` or `~/.cur
    AH_MCP_BASE_URL=https://ah-mcp.example.com
    AH_MCP_PORT=3000
    AH_REMOTE=true
+   AH_MCP_TOKEN=your-secret-token-here
    ```
 4. Install and start the service:
    ```bash
