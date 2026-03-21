@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	appie "github.com/gwillem/appie-go"
@@ -16,8 +17,10 @@ import (
 // RegisterProductTools registers product-related MCP tools.
 func RegisterProductTools(s *server.MCPServer, deps Deps) {
 	registerSearchProducts(s, deps)
+	registerSearchProductsBulk(s, deps)
 	registerSearchProductsFiltered(s, deps)
 	registerGetProduct(s, deps)
+	registerGetProductsBulk(s, deps)
 	registerGetBonusOffers(s, deps)
 	registerGetBonusGroupProducts(s, deps)
 	registerGetLastChanceItems(s, deps)
@@ -61,9 +64,21 @@ func registerSearchProducts(s *server.MCPServer, deps Deps) {
 			return errResult("query is required"), nil
 		}
 		limit := req.GetInt("limit", 10)
+		start := time.Now()
 
-		products, err := c.SearchProducts(ctx, query, limit)
-		if err != nil {
+		cacheKey := SearchCacheKey(query, limit)
+		if cached, ok := GlobalCache.Get(cacheKey); ok {
+			LogInfo("ah_search_products", "cache_hit query=%q duration=%v", query, time.Since(start))
+			return mcp.NewToolResultText(string(cached)), nil
+		}
+
+		var products []appie.Product
+		if err := withRetry(ctx, "ah_search_products", func() error {
+			var e error
+			products, e = c.SearchProducts(ctx, query, limit)
+			return e
+		}); err != nil {
+			LogError("ah_search_products", "search failed query=%q err=%v", query, err)
 			return errResult(fmt.Sprintf("Search failed: %v", err)), nil
 		}
 
@@ -98,7 +113,13 @@ func registerSearchProducts(s *server.MCPServer, deps Deps) {
 			}
 			results = append(results, it)
 		}
-		return jsonResult(results)
+		data, err := json.MarshalIndent(results, "", "  ")
+		if err != nil {
+			return errResult(fmt.Sprintf("marshal result: %v", err)), nil
+		}
+		GlobalCache.Set(cacheKey, data, CacheTTLSearch)
+		LogInfo("ah_search_products", "query=%q results=%d duration=%v", query, len(results), time.Since(start))
+		return mcp.NewToolResultText(string(data)), nil
 	})
 }
 
@@ -381,6 +402,321 @@ func refreshTokens(ctx context.Context, deps Deps) error {
 	return deps.RefreshIfNeeded(ctx)
 }
 
+// --- ah_search_products_bulk ---
+
+func registerSearchProductsBulk(s *server.MCPServer, deps Deps) {
+	tool := mcp.NewTool("ah_search_products_bulk",
+		mcp.WithTitleAnnotation("Albert Heijn: Bulk Product Search"),
+		mcp.WithDescription(
+			"Search for multiple products in one tool call. "+
+				"Pass a JSON array of search queries; results for all are returned together. "+
+				"Use this instead of calling ah_search_products repeatedly — saves tool-call quota. "+
+				"Max 10 queries per call. Dutch terms give best results.",
+		),
+		mcp.WithString("queries",
+			mcp.Required(),
+			mcp.Description(`JSON array of search queries, e.g. ["melk", "kaas", "brood", "kip"]`),
+		),
+		mcp.WithString("limit",
+			mcp.Description("Max results per query (default 5, max 10)"),
+		),
+	)
+	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if !deps.IsAuthenticated() {
+			return notAuthResult(), nil
+		}
+		if err := refreshTokens(ctx, deps); err != nil {
+			return errResult(fmt.Sprintf("Token refresh failed: %v", err)), nil
+		}
+		c, err := deps.GetClient()
+		if err != nil {
+			return errResult(fmt.Sprintf("Client error: %v", err)), nil
+		}
+
+		var queries []string
+		rawQ := req.GetArguments()["queries"]
+		switch v := rawQ.(type) {
+		case string:
+			if err := json.Unmarshal([]byte(v), &queries); err != nil {
+				return errResult(fmt.Sprintf("queries must be a JSON array: %v", err)), nil
+			}
+		case []any:
+			for _, q := range v {
+				if s, ok := q.(string); ok && s != "" {
+					queries = append(queries, s)
+				}
+			}
+		default:
+			return errResult("queries is required"), nil
+		}
+		if len(queries) == 0 {
+			return errResult("queries array is empty"), nil
+		}
+		if len(queries) > 10 {
+			queries = queries[:10]
+		}
+
+		limit := req.GetInt("limit", 5)
+		if limit > 10 {
+			limit = 10
+		}
+
+		start := time.Now()
+
+		type searchResult struct {
+			Query   string `json:"query"`
+			Results []struct {
+				ID         int     `json:"id"`
+				Title      string  `json:"title"`
+				Price      float64 `json:"price"`
+				BonusPrice float64 `json:"bonus_price,omitempty"`
+				Unit       string  `json:"unit,omitempty"`
+				IsBonus    bool    `json:"is_bonus"`
+			} `json:"results"`
+			Error string `json:"error,omitempty"`
+		}
+
+		results := make([]searchResult, len(queries))
+		for i := range results {
+			results[i].Query = queries[i]
+		}
+
+		const concurrency = 3
+		sem := make(chan struct{}, concurrency)
+		var wg sync.WaitGroup
+
+		for i, q := range queries {
+			wg.Add(1)
+			i, q := i, q
+			go func() {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+
+				// Check cache first.
+				cacheKey := SearchCacheKey(q, limit)
+				if cached, ok := GlobalCache.Get(cacheKey); ok {
+					var items []struct {
+						ID         int     `json:"id"`
+						Title      string  `json:"title"`
+						Price      float64 `json:"price"`
+						BonusPrice float64 `json:"bonus_price,omitempty"`
+						Unit       string  `json:"unit,omitempty"`
+						IsBonus    bool    `json:"is_bonus"`
+					}
+					if json.Unmarshal(cached, &items) == nil {
+						results[i].Results = items
+						return
+					}
+				}
+
+				var products []appie.Product
+				if err := withRetry(ctx, "ah_search_products_bulk", func() error {
+					var e error
+					products, e = c.SearchProducts(ctx, q, limit)
+					return e
+				}); err != nil {
+					results[i].Error = err.Error()
+					return
+				}
+
+				items := make([]struct {
+					ID         int     `json:"id"`
+					Title      string  `json:"title"`
+					Price      float64 `json:"price"`
+					BonusPrice float64 `json:"bonus_price,omitempty"`
+					Unit       string  `json:"unit,omitempty"`
+					IsBonus    bool    `json:"is_bonus"`
+				}, 0, len(products))
+				for _, p := range products {
+					it := struct {
+						ID         int     `json:"id"`
+						Title      string  `json:"title"`
+						Price      float64 `json:"price"`
+						BonusPrice float64 `json:"bonus_price,omitempty"`
+						Unit       string  `json:"unit,omitempty"`
+						IsBonus    bool    `json:"is_bonus"`
+					}{ID: p.ID, Title: p.Title, IsBonus: p.IsBonus, Unit: p.UnitSize}
+					if p.IsBonus {
+						it.BonusPrice = p.Price.Now
+						it.Price = p.Price.Was
+						if it.Price == 0 {
+							it.Price = p.Price.Now
+						}
+					} else {
+						it.Price = p.Price.Now
+					}
+					items = append(items, it)
+				}
+				results[i].Results = items
+
+				// Store in cache so single-search calls also benefit.
+				if data, err := json.Marshal(items); err == nil {
+					GlobalCache.Set(cacheKey, data, CacheTTLSearch)
+				}
+			}()
+		}
+		wg.Wait()
+
+		LogInfo("ah_search_products_bulk", "queries=%d duration=%v", len(queries), time.Since(start))
+		return jsonResult(results)
+	})
+}
+
+// --- ah_get_products_bulk ---
+
+func registerGetProductsBulk(s *server.MCPServer, deps Deps) {
+	tool := mcp.NewTool("ah_get_products_bulk",
+		mcp.WithTitleAnnotation("Albert Heijn: Bulk Product Details"),
+		mcp.WithDescription(
+			"Get details for multiple products by ID in one tool call. "+
+				"Use instead of calling ah_get_product repeatedly — saves tool-call quota. "+
+				"Optionally include nutritional info (calories, fat, protein, etc.) for all products. "+
+				"Max 20 product IDs per call.",
+		),
+		mcp.WithString("product_ids",
+			mcp.Required(),
+			mcp.Description("JSON array of product IDs, e.g. [123456, 789012, 345678]"),
+		),
+		mcp.WithString("include_nutritional_info",
+			mcp.Description("Set to 'true' to include nutritional values for all products (default false)"),
+		),
+	)
+	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if !deps.IsAuthenticated() {
+			return notAuthResult(), nil
+		}
+		if err := refreshTokens(ctx, deps); err != nil {
+			return errResult(fmt.Sprintf("Token refresh failed: %v", err)), nil
+		}
+		c, err := deps.GetClient()
+		if err != nil {
+			return errResult(fmt.Sprintf("Client error: %v", err)), nil
+		}
+
+		var productIDs []int
+		rawIDs := req.GetArguments()["product_ids"]
+		switch v := rawIDs.(type) {
+		case string:
+			if err := json.Unmarshal([]byte(v), &productIDs); err != nil {
+				return errResult(fmt.Sprintf("product_ids must be a JSON array: %v", err)), nil
+			}
+		case []any:
+			for _, r := range v {
+				if pid := toInt(r); pid > 0 {
+					productIDs = append(productIDs, pid)
+				}
+			}
+		default:
+			return errResult("product_ids is required"), nil
+		}
+		if len(productIDs) == 0 {
+			return errResult("product_ids array is empty"), nil
+		}
+		if len(productIDs) > 20 {
+			productIDs = productIDs[:20]
+		}
+
+		includeNutri := req.GetString("include_nutritional_info", "") == "true"
+		start := time.Now()
+
+		type productResult struct {
+			ID                   int         `json:"id"`
+			Title                string      `json:"title"`
+			Brand                string      `json:"brand,omitempty"`
+			Category             string      `json:"category,omitempty"`
+			Price                float64     `json:"price"`
+			BonusPrice           float64     `json:"bonus_price,omitempty"`
+			UnitSize             string      `json:"unit_size,omitempty"`
+			IsBonus              bool        `json:"is_bonus"`
+			NutriScore           string      `json:"nutri_score,omitempty"`
+			IsAvailable          bool        `json:"is_available"`
+			NutritionalInfo      interface{} `json:"nutritional_info,omitempty"`
+			Error                string      `json:"error,omitempty"`
+		}
+
+		results := make([]productResult, len(productIDs))
+		for i, pid := range productIDs {
+			results[i].ID = pid
+		}
+
+		const concurrency = 5
+		sem := make(chan struct{}, concurrency)
+		var wg sync.WaitGroup
+
+		for i, pid := range productIDs {
+			wg.Add(1)
+			i, pid := i, pid
+			go func() {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+
+				var cacheKey string
+				if includeNutri {
+					cacheKey = ProductFullCacheKey(pid)
+				} else {
+					cacheKey = ProductCacheKey(pid)
+				}
+
+				if cached, ok := GlobalCache.Get(cacheKey); ok {
+					var pr productResult
+					if json.Unmarshal(cached, &pr) == nil {
+						results[i] = pr
+						return
+					}
+				}
+
+				var p *appie.Product
+				if err := withRetry(ctx, "ah_get_products_bulk", func() error {
+					var e error
+					if includeNutri {
+						p, e = c.GetProductFull(ctx, pid)
+					} else {
+						p, e = c.GetProduct(ctx, pid)
+					}
+					return e
+				}); err != nil {
+					results[i].Error = err.Error()
+					return
+				}
+
+				pr := productResult{
+					ID:          p.ID,
+					Title:       p.Title,
+					Brand:       p.Brand,
+					Category:    p.Category,
+					IsBonus:     p.IsBonus,
+					NutriScore:  p.NutriScore,
+					IsAvailable: p.IsAvailable,
+					UnitSize:    p.UnitSize,
+				}
+				if p.IsBonus {
+					pr.BonusPrice = p.Price.Now
+					pr.Price = p.Price.Was
+					if pr.Price == 0 {
+						pr.Price = p.Price.Now
+					}
+				} else {
+					pr.Price = p.Price.Now
+				}
+				if includeNutri && len(p.NutritionalInfo) > 0 {
+					pr.NutritionalInfo = p.NutritionalInfo
+				}
+				results[i] = pr
+
+				if data, err := json.Marshal(pr); err == nil {
+					GlobalCache.Set(cacheKey, data, CacheTTLProduct)
+				}
+			}()
+		}
+		wg.Wait()
+
+		LogInfo("ah_get_products_bulk", "ids=%d nutri=%v duration=%v", len(productIDs), includeNutri, time.Since(start))
+		return jsonResult(results)
+	})
+}
+
 // --- ah_search_stores ---
 
 func registerSearchStores(s *server.MCPServer, deps Deps) {
@@ -489,16 +825,31 @@ func registerGetProduct(s *server.MCPServer, deps Deps) {
 			return errResult("product_id is required"), nil
 		}
 		includeNutri := req.GetString("include_nutritional_info", "") == "true"
+		start := time.Now()
+
+		var cacheKey string
+		if includeNutri {
+			cacheKey = ProductFullCacheKey(productID)
+		} else {
+			cacheKey = ProductCacheKey(productID)
+		}
+		if cached, ok := GlobalCache.Get(cacheKey); ok {
+			LogInfo("ah_get_product", "cache_hit id=%d duration=%v", productID, time.Since(start))
+			return mcp.NewToolResultText(string(cached)), nil
+		}
 
 		var p *appie.Product
-		var pErr error
-		if includeNutri {
-			p, pErr = c.GetProductFull(ctx, productID)
-		} else {
-			p, pErr = c.GetProduct(ctx, productID)
-		}
-		if pErr != nil {
-			return errResult(fmt.Sprintf("Failed to get product %d: %v", productID, pErr)), nil
+		if err := withRetry(ctx, "ah_get_product", func() error {
+			var e error
+			if includeNutri {
+				p, e = c.GetProductFull(ctx, productID)
+			} else {
+				p, e = c.GetProduct(ctx, productID)
+			}
+			return e
+		}); err != nil {
+			LogError("ah_get_product", "failed id=%d err=%v", productID, err)
+			return errResult(fmt.Sprintf("Failed to get product %d: %v", productID, err)), nil
 		}
 
 		type result struct {
@@ -548,7 +899,13 @@ func registerGetProduct(s *server.MCPServer, deps Deps) {
 		if includeNutri && len(p.NutritionalInfo) > 0 {
 			r.NutritionalInfo = p.NutritionalInfo
 		}
-		return jsonResult(r)
+		data, err := json.MarshalIndent(r, "", "  ")
+		if err != nil {
+			return errResult(fmt.Sprintf("marshal result: %v", err)), nil
+		}
+		GlobalCache.Set(cacheKey, data, CacheTTLProduct)
+		LogInfo("ah_get_product", "id=%d nutri=%v duration=%v", productID, includeNutri, time.Since(start))
+		return mcp.NewToolResultText(string(data)), nil
 	})
 }
 

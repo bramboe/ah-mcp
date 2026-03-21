@@ -51,6 +51,9 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Init structured logger (always stderr + optional file via AH_LOG_FILE).
+	tools.InitLogger(os.Getenv("AH_LOG_FILE"))
+
 	// AH_REMOTE env var also enables remote mode.
 	if os.Getenv("AH_REMOTE") == "true" {
 		*remote = true
