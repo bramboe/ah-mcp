@@ -99,10 +99,11 @@ func main() {
 	tools.RegisterInfoTool(s, deps)
 
 	ctx := context.Background()
+	appieVer := appieVersion()
 
 	switch *transport {
 	case "stdio":
-		fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] Starting in stdio mode (version: %s)\n", version)
+		fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] Starting in stdio mode (version: %s, appie-go: %s)\n", version, appieVer)
 		stdioSrv := server.NewStdioServer(s)
 		if err := stdioSrv.Listen(ctx, os.Stdin, os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] stdio server error: %v\n", err)
@@ -112,8 +113,8 @@ func main() {
 		addr := fmt.Sprintf(":%d", mcpPort)
 		baseURL := envOr("AH_MCP_BASE_URL", fmt.Sprintf("http://localhost:%d", mcpPort))
 		mcpToken := os.Getenv("AH_MCP_TOKEN")
-		fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] Starting SSE server on %s (version: %s, base URL: %s, auth: %v)\n",
-			addr, version, baseURL, mcpToken != "")
+		fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] Starting SSE server on %s (version: %s, appie-go: %s, base URL: %s, auth: %v)\n",
+			addr, version, appieVer, baseURL, mcpToken != "")
 		sseSrv := server.NewSSEServer(s, server.WithBaseURL(baseURL), server.WithKeepAlive(true), server.WithKeepAliveInterval(5*time.Second))
 		var handler http.Handler = sseSrv
 		if mcpToken != "" {
@@ -128,8 +129,8 @@ func main() {
 		addr := fmt.Sprintf(":%d", mcpPort)
 		baseURL := envOr("AH_MCP_BASE_URL", fmt.Sprintf("http://localhost:%d", mcpPort))
 		mcpToken := os.Getenv("AH_MCP_TOKEN")
-		fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] Starting Streamable HTTP server on %s (version: %s, base URL: %s, auth: %v)\n",
-			addr, version, baseURL, mcpToken != "")
+		fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] Starting Streamable HTTP server on %s (version: %s, appie-go: %s, base URL: %s, auth: %v)\n",
+			addr, version, appieVer, baseURL, mcpToken != "")
 		httpSrv := server.NewStreamableHTTPServer(s,
 			server.WithEndpointPath("/mcp"),
 			server.WithHeartbeatInterval(5*time.Second),

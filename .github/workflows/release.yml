@@ -21,11 +21,13 @@ jobs:
       - name: Build binaries
         run: |
           mkdir -p dist
-          GOOS=linux   GOARCH=amd64 go build -ldflags="-s -w" -o dist/ah-mcp-linux-amd64   .
-          GOOS=linux   GOARCH=arm64 go build -ldflags="-s -w" -o dist/ah-mcp-linux-arm64   .
-          GOOS=darwin  GOARCH=amd64 go build -ldflags="-s -w" -o dist/ah-mcp-darwin-amd64  .
-          GOOS=darwin  GOARCH=arm64 go build -ldflags="-s -w" -o dist/ah-mcp-darwin-arm64  .
-          GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/ah-mcp-windows-amd64.exe .
+          VERSION=${GITHUB_REF_NAME}
+          LDFLAGS="-s -w -X main.version=${VERSION}"
+          GOOS=linux   GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o dist/ah-mcp-linux-amd64   .
+          GOOS=linux   GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o dist/ah-mcp-linux-arm64   .
+          GOOS=darwin  GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o dist/ah-mcp-darwin-amd64  .
+          GOOS=darwin  GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o dist/ah-mcp-darwin-arm64  .
+          GOOS=windows GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o dist/ah-mcp-windows-amd64.exe .
 
       - name: Create release
         uses: softprops/action-gh-release@v2
