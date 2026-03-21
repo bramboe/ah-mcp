@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
+	"sync"
 
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/mrserzhan/ah-mcp/tools"
@@ -137,18 +140,72 @@ func ensureTokenDir(tokensPath string) error {
 // The token is accepted as:
 //   - Authorization: Bearer <token>  header, OR
 //   - ?token=<token>                 query parameter
+//
+// Once an SSE connection is authenticated, the sessionId it receives is
+// whitelisted so that subsequent /message posts (which don't carry the token)
+// are also allowed.
 func tokenAuthMiddleware(token string, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check Authorization header.
-		if auth := r.Header.Get("Authorization"); auth == "Bearer "+token {
-			next.ServeHTTP(w, r)
-			return
+	var sessions sync.Map // sessionId string -> struct{}
+
+	isAuthed := func(r *http.Request) bool {
+		if r.Header.Get("Authorization") == "Bearer "+token {
+			return true
 		}
-		// Check query parameter.
 		if r.URL.Query().Get("token") == token {
-			next.ServeHTTP(w, r)
+			return true
+		}
+		return false
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// /message: allow if sessionId was established by an authenticated SSE connection.
+		if strings.HasPrefix(r.URL.Path, "/message") {
+			if sid := r.URL.Query().Get("sessionId"); sid != "" {
+				if _, ok := sessions.Load(sid); ok {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+		}
+
+		if !isAuthed(r) {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+
+		// For SSE connections, wrap the ResponseWriter to capture the sessionId
+		// from the "event: endpoint" SSE message and whitelist it.
+		if strings.HasPrefix(r.URL.Path, "/sse") {
+			next.ServeHTTP(&sessionCapture{ResponseWriter: w, sessions: &sessions}, r)
+			return
+		}
+
+		next.ServeHTTP(w, r)
 	})
+}
+
+// sessionCapture wraps ResponseWriter to intercept SSE writes and extract
+// the sessionId advertised in the "event: endpoint" message.
+type sessionCapture struct {
+	http.ResponseWriter
+	sessions *sync.Map
+}
+
+func (sc *sessionCapture) Write(b []byte) (int, error) {
+	if idx := bytes.Index(b, []byte("sessionId=")); idx >= 0 {
+		rest := string(b[idx+len("sessionId="):])
+		if end := strings.IndexAny(rest, "& \n\r"); end != -1 {
+			rest = rest[:end]
+		}
+		if rest != "" {
+			sc.sessions.Store(rest, struct{}{})
+		}
+	}
+	return sc.ResponseWriter.Write(b)
+}
+
+func (sc *sessionCapture) Flush() {
+	if f, ok := sc.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
