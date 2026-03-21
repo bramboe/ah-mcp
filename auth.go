@@ -195,6 +195,14 @@ func StartOAuthFlow(ctx context.Context, callbackHost string, callbackPort int, 
 			req.URL.Host = target.Host
 			req.Host = target.Host
 			req.Header.Del("Accept-Encoding")
+			// Rewrite Origin and Referer so AH's API doesn't reject the request
+			// because it sees our proxy hostname instead of login.ah.nl.
+			if origin := req.Header.Get("Origin"); origin != "" {
+				req.Header.Set("Origin", target.Scheme+"://"+target.Host)
+			}
+			if referer := req.Header.Get("Referer"); referer != "" {
+				req.Header.Set("Referer", strings.Replace(referer, callbackHost, target.Scheme+"://"+target.Host, 1))
+			}
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			return rewriteOAuthResponse(resp, callbackHost, target.Host)
