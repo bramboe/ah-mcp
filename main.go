@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/mrserzhan/ah-mcp/tools"
@@ -97,7 +98,7 @@ func main() {
 		mcpToken := os.Getenv("AH_MCP_TOKEN")
 		fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] Starting SSE server on %s (base URL: %s, auth: %v)\n",
 			addr, baseURL, mcpToken != "")
-		sseSrv := server.NewSSEServer(s, server.WithBaseURL(baseURL), server.WithKeepAlive(true))
+		sseSrv := server.NewSSEServer(s, server.WithBaseURL(baseURL), server.WithKeepAlive(true), server.WithKeepAliveInterval(5*time.Second))
 		var handler http.Handler = sseSrv
 		if mcpToken != "" {
 			handler = tokenAuthMiddleware(mcpToken, sseSrv)
