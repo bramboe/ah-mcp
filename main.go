@@ -43,7 +43,13 @@ const (
 func main() {
 	transport := flag.String("transport", "sse", "Transport mode: 'sse', 'streamable-http', or 'stdio'")
 	remote := flag.Bool("remote", false, "Remote mode: disable auto browser-open on login (overridden by AH_REMOTE=true)")
+	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("ah-mcp %s (appie-go %s)\n", version, appieVersion())
+		os.Exit(0)
+	}
 
 	// AH_REMOTE env var also enables remote mode.
 	if os.Getenv("AH_REMOTE") == "true" {
