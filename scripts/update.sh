@@ -49,10 +49,22 @@ if [[ -x "$INSTALL_PATH" ]]; then
   echo "Current: $CURRENT → updating to $LATEST"
 fi
 
-# ── Download binary ───────────────────────────────────────────────────────────
-BINARY_URL="https://github.com/$REPO/releases/download/$LATEST/ah-mcp-$ARCH"
-echo "Downloading binary: $BINARY_URL"
-curl -fsSL "${AUTH[@]}" -L -o /tmp/ah-mcp-new "$BINARY_URL"
+# ── Download binary via GitHub API (works with private repos) ─────────────────
+BINARY_ASSET="ah-mcp-$ARCH"
+echo "Fetching release asset ID for $BINARY_ASSET..."
+ASSET_ID=$(curl -fsSL "${AUTH[@]}" \
+  "https://api.github.com/repos/$REPO/releases/tags/$LATEST" \
+  | grep -A1 "\"name\": \"$BINARY_ASSET\"" | grep '"id"' | head -1 | grep -o '[0-9]*')
+
+if [[ -z "$ASSET_ID" ]]; then
+  echo "ERROR: Could not find asset $BINARY_ASSET in release $LATEST"
+  exit 1
+fi
+
+echo "Downloading binary (asset $ASSET_ID)..."
+curl -fsSL "${AUTH[@]}" -H "Accept: application/octet-stream" \
+  -L -o /tmp/ah-mcp-new \
+  "https://api.github.com/repos/$REPO/releases/assets/$ASSET_ID"
 chmod 755 /tmp/ah-mcp-new
 
 # Quick sanity check
@@ -62,10 +74,22 @@ if ! file /tmp/ah-mcp-new | grep -q "ELF"; then
   exit 1
 fi
 
-# ── Download service file ─────────────────────────────────────────────────────
-SERVICE_URL="https://raw.githubusercontent.com/$REPO/refs/tags/$LATEST/ah-mcp.service"
+# ── Download service file via GitHub API ──────────────────────────────────────
 echo "Downloading service file..."
-curl -fsSL "${AUTH[@]}" -o /tmp/ah-mcp.service "$SERVICE_URL"
+SERVICE_ASSET_ID=$(curl -fsSL "${AUTH[@]}" \
+  "https://api.github.com/repos/$REPO/releases/tags/$LATEST" \
+  | grep -A1 '"name": "ah-mcp.service"' | grep '"id"' | head -1 | grep -o '[0-9]*')
+
+if [[ -n "$SERVICE_ASSET_ID" ]]; then
+  curl -fsSL "${AUTH[@]}" -H "Accept: application/octet-stream" \
+    -L -o /tmp/ah-mcp.service \
+    "https://api.github.com/repos/$REPO/releases/assets/$SERVICE_ASSET_ID"
+else
+  # Fall back to raw content API
+  curl -fsSL "${AUTH[@]}" \
+    "https://api.github.com/repos/$REPO/contents/ah-mcp.service?ref=$LATEST" \
+    | grep '"content"' | cut -d'"' -f4 | base64 -d > /tmp/ah-mcp.service
+fi
 
 # ── Deploy ────────────────────────────────────────────────────────────────────
 echo "Stopping $SERVICE_NAME..."
