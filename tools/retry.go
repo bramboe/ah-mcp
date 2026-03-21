@@ -42,5 +42,5 @@ func isRateLimited(err error) bool {
 	s := strings.ToLower(err.Error())
 	return strings.Contains(s, "429") ||
 		strings.Contains(s, "rate limit") ||
-		strings.Contains(s, "too many request")
+		strings.Contains(s, "too many requests")
 }

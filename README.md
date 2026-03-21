@@ -54,11 +54,8 @@ Authentication is handled entirely through a reverse-proxy OAuth flow — no tok
 | Client | Transport | Status |
 |---|---|---|
 | Claude Desktop | stdio | ✅ tested |
-| Claude Desktop | SSE | 🔲 untested |
-| Claude.ai (web) | SSE | 🔲 untested |
-| Windsurf | stdio | 🔲 untested |
-| Cursor | stdio | 🔲 untested |
-| ChatGPT Desktop | SSE | 🔲 untested |
+| Claude Desktop | Streamable HTTP | ✅ tested |
+| Claude.ai (web) | Streamable HTTP | ✅ tested |
 
 ## Quick start (pre-built binary)
 
