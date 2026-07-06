@@ -75,8 +75,8 @@ func registerGetShoppingList(s *server.MCPServer, deps Deps) {
 		}
 
 		type entry struct {
-			Position  int `json:"position"`
-			ItemID    int `json:"item_id,omitempty"`
+			Position  int    `json:"position"`
+			ItemID    int    `json:"item_id,omitempty"`
 			Name      string `json:"name"`
 			ProductID int    `json:"product_id,omitempty"`
 			Quantity  int    `json:"quantity"`
@@ -327,12 +327,12 @@ func registerRemoveFromShoppingList(s *server.MCPServer, deps Deps) {
 
 		// First fetch the current list so we can identify item positions.
 		type v2RawItem struct {
-			ListItemID int    `json:"listItemId"`
-			Position   int    `json:"position"`
-			OriginCode string `json:"originCode"`
-			Quantity   int    `json:"quantity"`
-			Type       string `json:"type"`
-			Description string `json:"description"`
+			ListItemID     int    `json:"listItemId"`
+			Position       int    `json:"position"`
+			OriginCode     string `json:"originCode"`
+			Quantity       int    `json:"quantity"`
+			Type           string `json:"type"`
+			Description    string `json:"description"`
 			ProductDetails struct {
 				Product struct {
 					WebshopID int    `json:"webshopId"`
@@ -504,11 +504,11 @@ func registerClearShoppingList(s *server.MCPServer, deps Deps) {
 
 		// Read all v2 items, then PATCH each with quantity=0 to remove them.
 		type v2ClearItem struct {
-			ListItemID int    `json:"listItemId"`
-			OriginCode string `json:"originCode"`
-			Quantity   int    `json:"quantity"`
-			Type       string `json:"type"`
-			Description string `json:"description"`
+			ListItemID     int    `json:"listItemId"`
+			OriginCode     string `json:"originCode"`
+			Quantity       int    `json:"quantity"`
+			Type           string `json:"type"`
+			Description    string `json:"description"`
 			ProductDetails struct {
 				Product struct {
 					WebshopID int `json:"webshopId"`

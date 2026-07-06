@@ -112,6 +112,9 @@ func registerLogout(s *server.MCPServer, deps Deps) {
 		}
 		// Reset the in-memory client so the next call gets a fresh unauthenticated state.
 		deps.ReloadClient() //nolint:errcheck — error just means no tokens, which is expected
+		// Drop all cached member data so nothing leaks into another account.
+		GlobalCache.Clear()
+		clearPersonalSnapshot()
 		// Also reset any in-progress OAuth flow.
 		oauthFlow.Lock()
 		oauthFlow.active = false

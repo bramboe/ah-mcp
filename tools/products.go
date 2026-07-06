@@ -621,18 +621,18 @@ func registerGetProductsBulk(s *server.MCPServer, deps Deps) {
 		start := time.Now()
 
 		type productResult struct {
-			ID                   int         `json:"id"`
-			Title                string      `json:"title"`
-			Brand                string      `json:"brand,omitempty"`
-			Category             string      `json:"category,omitempty"`
-			Price                float64     `json:"price"`
-			BonusPrice           float64     `json:"bonus_price,omitempty"`
-			UnitSize             string      `json:"unit_size,omitempty"`
-			IsBonus              bool        `json:"is_bonus"`
-			NutriScore           string      `json:"nutri_score,omitempty"`
-			IsAvailable          bool        `json:"is_available"`
-			NutritionalInfo      interface{} `json:"nutritional_info,omitempty"`
-			Error                string      `json:"error,omitempty"`
+			ID              int         `json:"id"`
+			Title           string      `json:"title"`
+			Brand           string      `json:"brand,omitempty"`
+			Category        string      `json:"category,omitempty"`
+			Price           float64     `json:"price"`
+			BonusPrice      float64     `json:"bonus_price,omitempty"`
+			UnitSize        string      `json:"unit_size,omitempty"`
+			IsBonus         bool        `json:"is_bonus"`
+			NutriScore      string      `json:"nutri_score,omitempty"`
+			IsAvailable     bool        `json:"is_available"`
+			NutritionalInfo interface{} `json:"nutritional_info,omitempty"`
+			Error           string      `json:"error,omitempty"`
 		}
 
 		results := make([]productResult, len(productIDs))
@@ -766,28 +766,27 @@ func registerSearchStores(s *server.MCPServer, deps Deps) {
 		}
 
 		type storeEntry struct {
-			ID        int    `json:"id"`
-			Name      string `json:"name"`
-			Type      string `json:"type,omitempty"`
-			Street    string `json:"street,omitempty"`
-			City      string `json:"city,omitempty"`
+			ID         int    `json:"id"`
+			Name       string `json:"name"`
+			Type       string `json:"type,omitempty"`
+			Street     string `json:"street,omitempty"`
+			City       string `json:"city,omitempty"`
 			PostalCode string `json:"postal_code,omitempty"`
 		}
 		results := make([]storeEntry, 0, len(stores))
 		for _, st := range stores {
 			results = append(results, storeEntry{
-				ID:        st.ID,
-				Name:      st.Name,
-				Type:      st.StoreType,
-				Street:    fmt.Sprintf("%s %s", st.Address.Street, st.Address.HouseNumber),
-				City:      st.Address.City,
+				ID:         st.ID,
+				Name:       st.Name,
+				Type:       st.StoreType,
+				Street:     fmt.Sprintf("%s %s", st.Address.Street, st.Address.HouseNumber),
+				City:       st.Address.City,
 				PostalCode: st.Address.PostalCode,
 			})
 		}
 		return jsonResult(results)
 	})
 }
-
 
 // --- ah_get_product ---
 
