@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	appie "github.com/gwillem/appie-go"
@@ -83,8 +84,40 @@ type bonusOfferItem struct {
 	DiscountPercentage float64 `json:"discount_percentage,omitempty"`
 	BonusMechanism     string  `json:"bonus_mechanism,omitempty"`
 	// Personal (choose-and-activate) offers only:
+	Number           int    `json:"number,omitempty"`
 	OfferID          string `json:"offer_id,omitempty"`
 	ActivationStatus string `json:"activation_status,omitempty"`
+}
+
+// personalSnapshot holds the most recent full numbered personal offer list so
+// ah_activate_personal_bonus can resolve numbers ("activate 1,3,4") to offer
+// ids. Numbers are assigned on the full unfiltered list, so they stay stable
+// regardless of the query/limit used when listing.
+var personalSnapshot struct {
+	sync.Mutex
+	offers []bonusOfferItem
+}
+
+// numberAndSnapshot assigns 1-based numbers to the full personal offer list
+// and stores it as the active snapshot.
+func numberAndSnapshot(offers []bonusOfferItem) []bonusOfferItem {
+	for i := range offers {
+		offers[i].Number = i + 1
+	}
+	personalSnapshot.Lock()
+	personalSnapshot.offers = offers
+	personalSnapshot.Unlock()
+	return offers
+}
+
+// snapshotOffer returns the snapshot entry for a 1-based number.
+func snapshotOffer(n int) (bonusOfferItem, bool) {
+	personalSnapshot.Lock()
+	defer personalSnapshot.Unlock()
+	if n < 1 || n > len(personalSnapshot.offers) {
+		return bonusOfferItem{}, false
+	}
+	return personalSnapshot.offers[n-1], true
 }
 
 func (p *sectionProductResp) toOffer() bonusOfferItem {
@@ -259,19 +292,22 @@ func RegisterBonusTools(s *server.MCPServer, deps Deps) {
 
 func registerActivatePersonalBonus(s *server.MCPServer, deps Deps) {
 	tool := mcp.NewTool("ah_activate_personal_bonus",
-		mcp.WithTitleAnnotation("Albert Heijn: Activate Personal Bonus Offer"),
+		mcp.WithTitleAnnotation("Albert Heijn: Activate Personal Bonus Offers"),
 		mcp.WithDescription(
-			"Activate one of the member's personal bonus offers (the AH app's 'Kies & Activeer' bonus box). "+
-				"Get offer_id and segment_id from ah_get_personal_bonus_offers (offers with activation_status not yet ACTIVATED). "+
+			"Activate one or more of the member's personal bonus offers (the AH app's 'Kies & Activeer' bonus box). "+
+				"Preferred: pass numbers='1,3,4' using the number field from a recent ah_get_personal_bonus_offers call. "+
+				"Alternative: pass a single offer_id (with optional segment_id). "+
 				"Standard accounts can activate up to 5 offers per bonus week, AH Premium members 10. "+
-				"Returns the offer's activation status after the call.",
+				"Returns the activation status per offer after the calls.",
+		),
+		mcp.WithString("numbers",
+			mcp.Description("Comma-separated offer numbers from ah_get_personal_bonus_offers, e.g. '1,3,4'. Call that tool first in this server session."),
 		),
 		mcp.WithString("offer_id",
-			mcp.Required(),
-			mcp.Description("Offer ID from the offer_id field in ah_get_personal_bonus_offers"),
+			mcp.Description("Single offer ID from the offer_id field (alternative to numbers)"),
 		),
 		mcp.WithString("segment_id",
-			mcp.Description("Bonus segment ID from the bonus_segment_id field (recommended; some offers require it)"),
+			mcp.Description("Bonus segment ID belonging to offer_id (recommended; some offers require it)"),
 		),
 		mcp.WithString("start_date",
 			mcp.Description("Bonus period start date YYYY-MM-DD (defaults to the current period's start)"),
@@ -289,54 +325,103 @@ func registerActivatePersonalBonus(s *server.MCPServer, deps Deps) {
 			return errResult(fmt.Sprintf("Client error: %v", err)), nil
 		}
 
+		numbers := strings.TrimSpace(req.GetString("numbers", ""))
 		offerID := req.GetString("offer_id", "")
-		if offerID == "" {
-			return errResult("offer_id is required"), nil
+		if numbers == "" && offerID == "" {
+			return errResult("provide numbers (e.g. '1,3,4') or offer_id"), nil
 		}
-		segmentID := req.GetString("segment_id", "")
 		startDate := req.GetString("start_date", "")
 		if startDate == "" {
 			startDate = currentPeriodStart(ctx, c)
 		}
 
-		body := map[string]any{"startDate": startDate}
-		if segmentID != "" {
-			// The API uses numeric segment ids; send a number when possible.
-			if n, err := strconv.Atoi(segmentID); err == nil {
-				body["segmentId"] = n
-			} else {
-				body["segmentId"] = segmentID
+		// Resolve the offers to activate.
+		type target struct {
+			number    int
+			offerID   string
+			segmentID string
+			title     string
+		}
+		var targets []target
+		if numbers != "" {
+			for _, field := range strings.FieldsFunc(numbers, func(r rune) bool { return r == ',' || r == ';' || r == ' ' }) {
+				n, err := strconv.Atoi(field)
+				if err != nil {
+					return errResult(fmt.Sprintf("invalid number %q in numbers", field)), nil
+				}
+				o, ok := snapshotOffer(n)
+				if !ok {
+					return errResult(fmt.Sprintf(
+						"number %d not found — call ah_get_personal_bonus_offers first to get the current numbered list", n)), nil
+				}
+				if o.OfferID == "" {
+					return errResult(fmt.Sprintf("offer %d (%s) has no offer_id and cannot be activated", n, o.Title)), nil
+				}
+				targets = append(targets, target{number: n, offerID: o.OfferID, segmentID: o.BonusSegmentID, title: o.Title})
 			}
+		} else {
+			targets = append(targets, target{offerID: offerID, segmentID: req.GetString("segment_id", "")})
 		}
 
-		path := "/mobile-services/bonuspage/v1/activate/" + url.PathEscape(offerID)
-		var raw json.RawMessage
-		if err := c.DoRequest(ctx, http.MethodPatch, path, body, &raw); err != nil {
-			LogError("ah_activate_personal_bonus", "offer=%s err=%v", offerID, err)
-			return errResult(fmt.Sprintf("Failed to activate offer %s: %v", offerID, err)), nil
+		// Activate each target.
+		type result struct {
+			Number           int    `json:"number,omitempty"`
+			OfferID          string `json:"offer_id"`
+			Title            string `json:"title,omitempty"`
+			ActivationStatus string `json:"activation_status,omitempty"`
+			Error            string `json:"error,omitempty"`
+		}
+		results := make([]result, 0, len(targets))
+		for _, t := range targets {
+			r := result{Number: t.number, OfferID: t.offerID, Title: t.title}
+			if err := activateOffer(ctx, c, t.offerID, t.segmentID, startDate); err != nil {
+				r.Error = err.Error()
+				LogError("ah_activate_personal_bonus", "offer=%s err=%v", t.offerID, err)
+			}
+			results = append(results, r)
 		}
 
 		// Activation changes the personal offer list; drop the cached copy and
-		// look up the offer's new status for confirmation.
+		// confirm the new status of each offer. The snapshot keeps its
+		// numbering; only statuses are updated.
 		GlobalCache.Invalidate("bonus:personal")
-		status := "UNKNOWN"
 		if offers, _, err := fetchChooseAndActivate(ctx, c, startDate); err == nil {
+			statusByOffer := make(map[string]string, len(offers))
 			for _, o := range offers {
-				if o.OfferID == offerID {
-					status = o.ActivationStatus
-					break
+				statusByOffer[o.OfferID] = o.ActivationStatus
+			}
+			for i := range results {
+				if s, ok := statusByOffer[results[i].OfferID]; ok {
+					results[i].ActivationStatus = s
 				}
 			}
+			personalSnapshot.Lock()
+			for i := range personalSnapshot.offers {
+				if s, ok := statusByOffer[personalSnapshot.offers[i].OfferID]; ok {
+					personalSnapshot.offers[i].ActivationStatus = s
+				}
+			}
+			personalSnapshot.Unlock()
 		}
 
-		type response struct {
-			OfferID          string          `json:"offer_id"`
-			ActivationStatus string          `json:"activation_status"`
-			APIResponse      json.RawMessage `json:"api_response,omitempty"`
-		}
-		LogInfo("ah_activate_personal_bonus", "offer=%s status=%s", offerID, status)
-		return jsonResult(response{OfferID: offerID, ActivationStatus: status, APIResponse: raw})
+		LogInfo("ah_activate_personal_bonus", "activated=%d", len(results))
+		return jsonResult(results)
 	})
+}
+
+// activateOffer performs the activation PATCH for a single personal offer.
+func activateOffer(ctx context.Context, c *appie.Client, offerID, segmentID, startDate string) error {
+	body := map[string]any{"startDate": startDate}
+	if segmentID != "" {
+		// The API uses numeric segment ids; send a number when possible.
+		if n, err := strconv.Atoi(segmentID); err == nil {
+			body["segmentId"] = n
+		} else {
+			body["segmentId"] = segmentID
+		}
+	}
+	path := "/mobile-services/bonuspage/v1/activate/" + url.PathEscape(offerID)
+	return c.DoRequest(ctx, http.MethodPatch, path, body, nil)
 }
 
 // --- ah_get_upcoming_bonus_offers ---
@@ -515,6 +600,7 @@ func registerGetPersonalBonusOffers(s *server.MCPServer, deps Deps) {
 		if cached, ok := GlobalCache.Get(cacheKey); ok {
 			var offers []bonusOfferItem
 			if err := unmarshalCached(cached, &offers); err == nil {
+				offers = numberAndSnapshot(offers)
 				LogInfo("ah_get_personal_bonus_offers", "cache_hit duration=%v", time.Since(start))
 				return jsonResult(filterOffers(offers, query, limit))
 			}
@@ -531,6 +617,7 @@ func registerGetPersonalBonusOffers(s *server.MCPServer, deps Deps) {
 				"Failed to get personal bonus offers: %v. "+
 					"Personal offers require a logged-in AH member with a Bonuskaart linked to the account.", err)), nil
 		}
+		offers = numberAndSnapshot(offers)
 		cacheOffers(cacheKey, offers)
 
 		LogInfo("ah_get_personal_bonus_offers", "offers=%d duration=%v", len(offers), time.Since(start))
