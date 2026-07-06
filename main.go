@@ -103,6 +103,7 @@ func main() {
 	tools.RegisterLoginTool(s, deps)
 	tools.RegisterProductTools(s, deps)
 	tools.RegisterBonusTools(s, deps)
+	tools.RegisterSavingsTools(s, deps)
 	tools.RegisterOrderTools(s, deps)
 	tools.RegisterBasketTools(s, deps)
 	tools.RegisterMemberTools(s, deps)
