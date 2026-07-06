@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,6 +54,9 @@ type sectionProductResp struct {
 	PriceBeforeBonus float64 `json:"priceBeforeBonus"`
 	BonusMechanism   string  `json:"bonusMechanism"`
 	SalesUnitSize    string  `json:"salesUnitSize"`
+	// Personal (choose-and-activate) offers carry activation metadata.
+	OfferID          json.Number `json:"offerId"`
+	ActivationStatus string      `json:"activationStatus"`
 }
 
 type sectionGroupResp struct {
@@ -61,6 +66,10 @@ type sectionGroupResp struct {
 	ExampleFromPrice    float64              `json:"exampleFromPrice"`
 	ExampleForPrice     float64              `json:"exampleForPrice"`
 	Products            []sectionProductResp `json:"products"`
+	// Personal (choose-and-activate) offers carry activation metadata.
+	OfferID          json.Number `json:"offerId"`
+	SegmentID        json.Number `json:"segmentId"`
+	ActivationStatus string      `json:"activationStatus"`
 }
 
 // bonusOfferItem is the JSON shape returned to the agent. It matches the
@@ -73,15 +82,23 @@ type bonusOfferItem struct {
 	BonusPrice         float64 `json:"bonus_price"`
 	DiscountPercentage float64 `json:"discount_percentage,omitempty"`
 	BonusMechanism     string  `json:"bonus_mechanism,omitempty"`
+	// Personal (choose-and-activate) offers only:
+	OfferID          string `json:"offer_id,omitempty"`
+	ActivationStatus string `json:"activation_status,omitempty"`
 }
 
 func (p *sectionProductResp) toOffer() bonusOfferItem {
 	it := bonusOfferItem{
-		ID:             p.WebshopID,
-		Title:          p.Title,
-		OriginalPrice:  p.PriceBeforeBonus,
-		BonusPrice:     p.CurrentPrice,
-		BonusMechanism: p.BonusMechanism,
+		ID:               p.WebshopID,
+		Title:            p.Title,
+		OriginalPrice:    p.PriceBeforeBonus,
+		BonusPrice:       p.CurrentPrice,
+		BonusMechanism:   p.BonusMechanism,
+		OfferID:          p.OfferID.String(),
+		ActivationStatus: p.ActivationStatus,
+	}
+	if it.OfferID == "" || it.OfferID == "0" {
+		it.OfferID = ""
 	}
 	if it.OriginalPrice > 0 && it.BonusPrice > 0 {
 		it.DiscountPercentage = (1 - it.BonusPrice/it.OriginalPrice) * 100
@@ -91,11 +108,22 @@ func (p *sectionProductResp) toOffer() bonusOfferItem {
 
 func (g *sectionGroupResp) toOffer() bonusOfferItem {
 	it := bonusOfferItem{
-		BonusSegmentID: g.ID,
-		Title:          g.SegmentDescription,
-		OriginalPrice:  g.ExampleFromPrice,
-		BonusPrice:     g.ExampleForPrice,
-		BonusMechanism: g.DiscountDescription,
+		BonusSegmentID:   g.ID,
+		Title:            g.SegmentDescription,
+		OriginalPrice:    g.ExampleFromPrice,
+		BonusPrice:       g.ExampleForPrice,
+		BonusMechanism:   g.DiscountDescription,
+		OfferID:          g.OfferID.String(),
+		ActivationStatus: g.ActivationStatus,
+	}
+	if it.BonusSegmentID == "" {
+		it.BonusSegmentID = g.SegmentID.String()
+		if it.BonusSegmentID == "0" {
+			it.BonusSegmentID = ""
+		}
+	}
+	if it.OfferID == "" || it.OfferID == "0" {
+		it.OfferID = ""
 	}
 	if it.OriginalPrice > 0 && it.BonusPrice > 0 {
 		it.DiscountPercentage = (1 - it.BonusPrice/it.OriginalPrice) * 100
@@ -122,6 +150,11 @@ func fetchSectionOffers(ctx context.Context, c *appie.Client, relURL string) ([]
 	if err := c.DoRequest(ctx, http.MethodGet, path, nil, &section); err != nil {
 		return nil, err
 	}
+	return sectionToOffers(section), nil
+}
+
+// sectionToOffers flattens a section response into offer items.
+func sectionToOffers(section bonusSectionResp) []bonusOfferItem {
 	var offers []bonusOfferItem
 	for _, entry := range section.BonusGroupOrProducts {
 		if entry.Product != nil {
@@ -129,15 +162,28 @@ func fetchSectionOffers(ctx context.Context, c *appie.Client, relURL string) ([]
 		}
 		if entry.BonusGroup != nil {
 			if len(entry.BonusGroup.Products) > 0 {
+				group := entry.BonusGroup.toOffer()
 				for i := range entry.BonusGroup.Products {
-					offers = append(offers, entry.BonusGroup.Products[i].toOffer())
+					it := entry.BonusGroup.Products[i].toOffer()
+					// Products inside a personal group inherit the group's
+					// activation metadata when they carry none themselves.
+					if it.OfferID == "" {
+						it.OfferID = group.OfferID
+					}
+					if it.ActivationStatus == "" {
+						it.ActivationStatus = group.ActivationStatus
+					}
+					if it.BonusSegmentID == "" {
+						it.BonusSegmentID = group.BonusSegmentID
+					}
+					offers = append(offers, it)
 				}
 			} else {
 				offers = append(offers, entry.BonusGroup.toOffer())
 			}
 		}
 	}
-	return offers, nil
+	return offers
 }
 
 // collectTabOffers fetches all section URLs of a period that match one of the
@@ -206,6 +252,91 @@ func filterOffers(offers []bonusOfferItem, query string, limit int) []bonusOffer
 func RegisterBonusTools(s *server.MCPServer, deps Deps) {
 	registerGetUpcomingBonusOffers(s, deps)
 	registerGetPersonalBonusOffers(s, deps)
+	registerActivatePersonalBonus(s, deps)
+}
+
+// --- ah_activate_personal_bonus ---
+
+func registerActivatePersonalBonus(s *server.MCPServer, deps Deps) {
+	tool := mcp.NewTool("ah_activate_personal_bonus",
+		mcp.WithTitleAnnotation("Albert Heijn: Activate Personal Bonus Offer"),
+		mcp.WithDescription(
+			"Activate one of the member's personal bonus offers (the AH app's 'Kies & Activeer' bonus box). "+
+				"Get offer_id and segment_id from ah_get_personal_bonus_offers (offers with activation_status not yet ACTIVATED). "+
+				"Standard accounts can activate up to 5 offers per bonus week, AH Premium members 10. "+
+				"Returns the offer's activation status after the call.",
+		),
+		mcp.WithString("offer_id",
+			mcp.Required(),
+			mcp.Description("Offer ID from the offer_id field in ah_get_personal_bonus_offers"),
+		),
+		mcp.WithString("segment_id",
+			mcp.Description("Bonus segment ID from the bonus_segment_id field (recommended; some offers require it)"),
+		),
+		mcp.WithString("start_date",
+			mcp.Description("Bonus period start date YYYY-MM-DD (defaults to the current period's start)"),
+		),
+	)
+	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if !deps.IsAuthenticated() {
+			return notAuthResult(), nil
+		}
+		if err := refreshTokens(ctx, deps); err != nil {
+			return errResult(fmt.Sprintf("Token refresh failed: %v", err)), nil
+		}
+		c, err := deps.GetClient()
+		if err != nil {
+			return errResult(fmt.Sprintf("Client error: %v", err)), nil
+		}
+
+		offerID := req.GetString("offer_id", "")
+		if offerID == "" {
+			return errResult("offer_id is required"), nil
+		}
+		segmentID := req.GetString("segment_id", "")
+		startDate := req.GetString("start_date", "")
+		if startDate == "" {
+			startDate = currentPeriodStart(ctx, c)
+		}
+
+		body := map[string]any{"startDate": startDate}
+		if segmentID != "" {
+			// The API uses numeric segment ids; send a number when possible.
+			if n, err := strconv.Atoi(segmentID); err == nil {
+				body["segmentId"] = n
+			} else {
+				body["segmentId"] = segmentID
+			}
+		}
+
+		path := "/mobile-services/bonuspage/v1/activate/" + url.PathEscape(offerID)
+		var raw json.RawMessage
+		if err := c.DoRequest(ctx, http.MethodPatch, path, body, &raw); err != nil {
+			LogError("ah_activate_personal_bonus", "offer=%s err=%v", offerID, err)
+			return errResult(fmt.Sprintf("Failed to activate offer %s: %v", offerID, err)), nil
+		}
+
+		// Activation changes the personal offer list; drop the cached copy and
+		// look up the offer's new status for confirmation.
+		GlobalCache.Invalidate("bonus:personal")
+		status := "UNKNOWN"
+		if offers, _, err := fetchChooseAndActivate(ctx, c, startDate); err == nil {
+			for _, o := range offers {
+				if o.OfferID == offerID {
+					status = o.ActivationStatus
+					break
+				}
+			}
+		}
+
+		type response struct {
+			OfferID          string          `json:"offer_id"`
+			ActivationStatus string          `json:"activation_status"`
+			APIResponse      json.RawMessage `json:"api_response,omitempty"`
+		}
+		LogInfo("ah_activate_personal_bonus", "offer=%s status=%s", offerID, status)
+		return jsonResult(response{OfferID: offerID, ActivationStatus: status, APIResponse: raw})
+	})
 }
 
 // --- ah_get_upcoming_bonus_offers ---
@@ -347,6 +478,9 @@ func registerGetPersonalBonusOffers(s *server.MCPServer, deps Deps) {
 		mcp.WithString("query",
 			mcp.Description("Optional keyword filter (Dutch or English) applied client-side, e.g. 'kaas', 'koffie'"),
 		),
+		mcp.WithString("include_raw",
+			mcp.Description("Set to 'true' to return the raw choose-and-activate API payload (debugging)"),
+		),
 	)
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		if !deps.IsAuthenticated() {
@@ -363,6 +497,19 @@ func registerGetPersonalBonusOffers(s *server.MCPServer, deps Deps) {
 		limit := req.GetInt("limit", 20)
 		query := req.GetString("query", "")
 		start := time.Now()
+
+		if strings.EqualFold(req.GetString("include_raw", ""), "true") {
+			startDate := currentPeriodStart(ctx, c)
+			_, raw, err := fetchChooseAndActivate(ctx, c, startDate)
+			if err != nil {
+				return errResult(fmt.Sprintf("choose-and-activate (bonusStartDate=%s) failed: %v", startDate, err)), nil
+			}
+			out := string(raw)
+			if len(out) > 30000 {
+				out = out[:30000] + "\n...truncated..."
+			}
+			return mcp.NewToolResultText(out), nil
+		}
 
 		cacheKey := "bonus:personal"
 		if cached, ok := GlobalCache.Get(cacheKey); ok {
@@ -391,37 +538,124 @@ func registerGetPersonalBonusOffers(s *server.MCPServer, deps Deps) {
 	})
 }
 
-// fetchPersonalOffers retrieves member-specific offers from the dedicated
-// personal bonus section (sectionType "PO" / "Persoonlijke Bonus"). The
-// endpoint returns 200 with an empty list for accounts without personal
-// offers. As a secondary source, PERSONAL/PREMIUM tabs advertised in the
-// bonus metadata are scanned too.
-func fetchPersonalOffers(ctx context.Context, c *appie.Client) ([]bonusOfferItem, error) {
+// currentPeriodStart returns the bonusStartDate of the period covering today,
+// falling back to today's date when the metadata is unavailable.
+func currentPeriodStart(ctx context.Context, c *appie.Client) string {
 	today := time.Now().Format("2006-01-02")
-
-	relURL := fmt.Sprintf("bonuspage/v2/section/personal?application=AHWEBSHOP&date=%s", today)
-	offers, err := fetchSectionOffers(ctx, c, relURL)
-	if err != nil {
-		return nil, err
-	}
-	if len(offers) > 0 {
-		return offers, nil
-	}
-
-	// Secondary: some accounts get personal deals via dedicated metadata tabs.
 	meta, err := fetchBonusMetadata(ctx, c)
 	if err != nil {
-		return offers, nil //nolint:nilerr — primary source succeeded; metadata is best-effort
+		return today
 	}
 	for i := range meta.Periods {
 		p := &meta.Periods[i]
-		if p.BonusStartDate > today || p.BonusEndDate < today {
-			continue
-		}
-		tabOffers, err := collectTabOffers(ctx, c, p, "PERSONAL", "PREMIUM")
-		if err == nil && len(tabOffers) > 0 {
-			return tabOffers, nil
+		if p.BonusStartDate <= today && p.BonusEndDate >= today {
+			return p.BonusStartDate
 		}
 	}
-	return offers, nil
+	return today
+}
+
+// fetchChooseAndActivate retrieves the member's choose-and-activate personal
+// offers (the AH app's "Kies & Activeer" bonus box), including activation
+// status. Returns both the parsed offers and the raw payload for debugging.
+func fetchChooseAndActivate(ctx context.Context, c *appie.Client, startDate string) ([]bonusOfferItem, json.RawMessage, error) {
+	path := "/mobile-services/bonuspage/v1/choose-and-activate?bonusStartDate=" + startDate
+	var raw json.RawMessage
+	if err := c.DoRequest(ctx, http.MethodGet, path, nil, &raw); err != nil {
+		return nil, nil, err
+	}
+	return parseOfferPayload(raw), raw, nil
+}
+
+// parseOfferPayload extracts offers from a bonus payload whose envelope
+// varies per endpoint: an object with bonusGroupOrProducts, a bare array of
+// {product|bonusGroup} entries, an object wrapping such an array under some
+// key, or an array of flat group objects.
+func parseOfferPayload(raw json.RawMessage) []bonusOfferItem {
+	if len(raw) == 0 {
+		return nil
+	}
+
+	var section bonusSectionResp
+	if err := json.Unmarshal(raw, &section); err == nil {
+		if offers := sectionToOffers(section); len(offers) > 0 {
+			return offers
+		}
+	}
+
+	var entries []struct {
+		Product    *sectionProductResp `json:"product"`
+		BonusGroup *sectionGroupResp   `json:"bonusGroup"`
+	}
+	if err := json.Unmarshal(raw, &entries); err == nil {
+		section := bonusSectionResp{BonusGroupOrProducts: entries}
+		if offers := sectionToOffers(section); len(offers) > 0 {
+			return offers
+		}
+		// Array of flat group objects rather than {product|bonusGroup} wrappers.
+		var groups []sectionGroupResp
+		if err := json.Unmarshal(raw, &groups); err == nil {
+			var offers []bonusOfferItem
+			for i := range groups {
+				if o := groups[i].toOffer(); o.Title != "" || o.OfferID != "" {
+					offers = append(offers, o)
+				}
+			}
+			if len(offers) > 0 {
+				return offers
+			}
+		}
+		return nil
+	}
+
+	// Object with the offer array under some wrapper key.
+	var wrapper map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &wrapper); err == nil {
+		for _, v := range wrapper {
+			trimmed := strings.TrimSpace(string(v))
+			if strings.HasPrefix(trimmed, "[") {
+				if offers := parseOfferPayload(v); len(offers) > 0 {
+					return offers
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// fetchPersonalOffers retrieves member-specific offers. Primary source is the
+// choose-and-activate endpoint (carries offer_id + activation_status); the
+// personal bonus section and metadata PERSONAL/PREMIUM tabs are fallbacks.
+func fetchPersonalOffers(ctx context.Context, c *appie.Client) ([]bonusOfferItem, error) {
+	today := time.Now().Format("2006-01-02")
+	startDate := currentPeriodStart(ctx, c)
+
+	offers, _, caErr := fetchChooseAndActivate(ctx, c, startDate)
+	if caErr == nil && len(offers) > 0 {
+		return offers, nil
+	}
+
+	relURL := fmt.Sprintf("bonuspage/v2/section/personal?application=AHWEBSHOP&date=%s", today)
+	secOffers, secErr := fetchSectionOffers(ctx, c, relURL)
+	if secErr == nil && len(secOffers) > 0 {
+		return secOffers, nil
+	}
+
+	// Tertiary: some accounts get personal deals via dedicated metadata tabs.
+	if meta, err := fetchBonusMetadata(ctx, c); err == nil {
+		for i := range meta.Periods {
+			p := &meta.Periods[i]
+			if p.BonusStartDate > today || p.BonusEndDate < today {
+				continue
+			}
+			if tabOffers, err := collectTabOffers(ctx, c, p, "PERSONAL", "PREMIUM"); err == nil && len(tabOffers) > 0 {
+				return tabOffers, nil
+			}
+		}
+	}
+
+	if caErr != nil && secErr != nil {
+		return nil, fmt.Errorf("choose-and-activate: %v; personal section: %v", caErr, secErr)
+	}
+	return []bonusOfferItem{}, nil
 }
