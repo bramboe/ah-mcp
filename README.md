@@ -243,8 +243,8 @@ Tokens are stored automatically at `/home/ah-mcp/.config/ah-mcp/tokens.json` —
 | `ah_get_bonus_offers` | All current bonus/promotional offers. Optional keyword filter. |
 | `ah_get_bonus_group_products` | All products in a specific bonus deal group (e.g. "2+1 gratis"). Use `segment_id` from `ah_get_bonus_offers`. |
 | `ah_get_upcoming_bonus_offers` | NEXT week's bonus offers, before they start. AH publishes them a few days ahead (typically from Friday); before that the tool reports from which date they become visible. |
-| `ah_get_personal_bonus_offers` | Your personal bonus offers (persoonlijke bonus / Kies & Activeer) with `offer_id` and `activation_status` per offer. |
-| `ah_activate_personal_bonus` | Activate a personal bonus offer by `offer_id` (max 5 per week, Premium 10). |
+| `ah_get_personal_bonus_offers` | Your personal bonus offers (persoonlijke bonus / Kies & Activeer), numbered, with `offer_id` and `activation_status` per offer. |
+| `ah_activate_personal_bonus` | Activate personal bonus offers by number (`numbers="1,3,4"`) or by `offer_id` (max 5 per week, Premium 10). |
 | `ah_get_last_chance_items` | Vandaag-af / clearance items from a specific store. |
 | `ah_search_stores` | Find AH stores near a postal code (or your registered address). |
 
