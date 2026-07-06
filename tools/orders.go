@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -65,14 +66,14 @@ func registerGetOrderHistory(s *server.MCPServer, deps Deps) {
 		}
 
 		type orderEntry struct {
-			ID          int     `json:"id"`
-			Date        string  `json:"date,omitempty"`
-			TimeWindow  string  `json:"time_window,omitempty"`
-			TotalPrice  float64 `json:"total_price"`
-			ItemCount   int     `json:"item_count,omitempty"`
-			Status      string  `json:"status"`
-			ShoppingType string `json:"shopping_type,omitempty"`
-			Modifiable  bool    `json:"modifiable"`
+			ID           int     `json:"id"`
+			Date         string  `json:"date,omitempty"`
+			TimeWindow   string  `json:"time_window,omitempty"`
+			TotalPrice   float64 `json:"total_price"`
+			ItemCount    int     `json:"item_count,omitempty"`
+			Status       string  `json:"status"`
+			ShoppingType string  `json:"shopping_type,omitempty"`
+			Modifiable   bool    `json:"modifiable"`
 		}
 		results := make([]orderEntry, 0, len(fulfillments))
 		for i, f := range fulfillments {
@@ -84,13 +85,13 @@ func registerGetOrderHistory(s *server.MCPServer, deps Deps) {
 				date = f.Delivery.Slot.Date
 			}
 			results = append(results, orderEntry{
-				ID:          f.OrderID,
-				Date:        date,
-				TimeWindow:  f.Delivery.Slot.TimeDisplay,
-				TotalPrice:  f.TotalPrice,
-				Status:      f.StatusDescription,
+				ID:           f.OrderID,
+				Date:         date,
+				TimeWindow:   f.Delivery.Slot.TimeDisplay,
+				TotalPrice:   f.TotalPrice,
+				Status:       f.StatusDescription,
 				ShoppingType: f.ShoppingType,
-				Modifiable:  f.Modifiable,
+				Modifiable:   f.Modifiable,
 			})
 		}
 		return jsonResult(results)
@@ -237,87 +238,9 @@ func registerGetFrequentItems(s *server.MCPServer, deps Deps) {
 
 		minCount := req.GetInt("min_order_count", 3)
 
-		// Fetch both open and past (CLOSED) fulfillments so we have a full history.
-		openFulfillments, err := c.GetFulfillments(ctx)
+		freq, err := computeFrequentProducts(ctx, c)
 		if err != nil {
-			return errResult(fmt.Sprintf("Failed to get open fulfillments: %v", err)), nil
-		}
-
-		const closedQuery = `query OrderFulfillmentsClosed {
-  orderFulfillments(status: CLOSED) {
-    result {
-      orderId
-      delivery { slot { date } }
-    }
-  }
-}`
-		type closedResult struct {
-			OrderID  int `json:"orderId"`
-			Delivery struct {
-				Slot struct{ Date string `json:"date"` } `json:"slot"`
-			} `json:"delivery"`
-		}
-		type closedResp struct {
-			OrderFulfillments struct {
-				Result []closedResult `json:"result"`
-			} `json:"orderFulfillments"`
-		}
-		var cr closedResp
-		_ = c.DoGraphQL(ctx, closedQuery, nil, &cr) // ignore error — CLOSED may not exist
-
-		type minFulfillment struct {
-			OrderID   int
-			OrderDate string
-		}
-		var allFulfillments []minFulfillment
-		for _, f := range openFulfillments {
-			allFulfillments = append(allFulfillments, minFulfillment{OrderID: f.OrderID, OrderDate: f.Delivery.Slot.Date})
-		}
-		for _, f := range cr.OrderFulfillments.Result {
-			allFulfillments = append(allFulfillments, minFulfillment{OrderID: f.OrderID, OrderDate: f.Delivery.Slot.Date})
-		}
-
-		type productStats struct {
-			Name          string
-			Count         int
-			LastOrderDate string
-		}
-		stats := map[int]*productStats{}
-
-		for _, f := range allFulfillments {
-			orderDate := f.OrderDate
-
-			order, oErr := c.GetOrderDetails(ctx, f.OrderID)
-			if oErr != nil {
-				fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] Warning: could not fetch order %d: %v\n", f.OrderID, oErr)
-				continue
-			}
-			seen := map[int]bool{}
-			for _, item := range order.Items {
-				pid := item.ProductID
-				if seen[pid] {
-					continue
-				}
-				seen[pid] = true
-
-				name := ""
-				if item.Product != nil {
-					name = item.Product.Title
-				}
-				if name == "" {
-					name = strconv.Itoa(pid)
-				}
-
-				if stats[pid] == nil {
-					stats[pid] = &productStats{Name: name}
-				}
-				stats[pid].Count++
-				// Keep latest date
-				if orderDate > stats[pid].LastOrderDate {
-					stats[pid].LastOrderDate = orderDate
-					stats[pid].Name = name // update name in case it was empty before
-				}
-			}
+			return errResult(fmt.Sprintf("Failed to get frequent products: %v", err)), nil
 		}
 
 		type item struct {
@@ -327,25 +250,145 @@ func registerGetFrequentItems(s *server.MCPServer, deps Deps) {
 			LastOrderedDate string `json:"last_ordered_date,omitempty"`
 		}
 		results := []item{}
-		for pid, s := range stats {
-			if s.Count >= minCount {
-				lastDate := s.LastOrderDate
-				if t, err := time.Parse("2006-01-02", lastDate); err == nil {
-					lastDate = t.Format("2006-01-02")
-				}
+		for _, f := range freq {
+			if f.Count >= minCount {
 				results = append(results, item{
-					ProductName:     s.Name,
-					ProductID:       pid,
-					OrderCount:      s.Count,
-					LastOrderedDate: lastDate,
+					ProductName:     f.Name,
+					ProductID:       f.ProductID,
+					OrderCount:      f.Count,
+					LastOrderedDate: f.LastOrderDate,
 				})
 			}
 		}
-		sort.Slice(results, func(i, j int) bool {
-			return results[i].OrderCount > results[j].OrderCount
-		})
 		return jsonResult(results)
 	})
+}
+
+// frequentProduct is a product aggregated from the full order history.
+type frequentProduct struct {
+	ProductID     int    `json:"product_id"`
+	Name          string `json:"name"`
+	Count         int    `json:"count"`
+	LastOrderDate string `json:"last_order_date,omitempty"`
+}
+
+// computeFrequentProducts aggregates how often each product appears across
+// open and closed order fulfillments, sorted by count (desc). Results are
+// cached for 30 minutes: the aggregation costs one order-details call per
+// fulfillment, and order history changes rarely.
+func computeFrequentProducts(ctx context.Context, c *appie.Client) ([]frequentProduct, error) {
+	const cacheKey = "frequent:products"
+	if cached, ok := GlobalCache.Get(cacheKey); ok {
+		var freq []frequentProduct
+		if err := unmarshalCached(cached, &freq); err == nil {
+			return freq, nil
+		}
+	}
+
+	// Fetch both open and past (CLOSED) fulfillments so we have a full history.
+	openFulfillments, err := c.GetFulfillments(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get open fulfillments: %w", err)
+	}
+
+	const closedQuery = `query OrderFulfillmentsClosed {
+  orderFulfillments(status: CLOSED) {
+    result {
+      orderId
+      delivery { slot { date } }
+    }
+  }
+}`
+	type closedResult struct {
+		OrderID  int `json:"orderId"`
+		Delivery struct {
+			Slot struct {
+				Date string `json:"date"`
+			} `json:"slot"`
+		} `json:"delivery"`
+	}
+	type closedResp struct {
+		OrderFulfillments struct {
+			Result []closedResult `json:"result"`
+		} `json:"orderFulfillments"`
+	}
+	var cr closedResp
+	_ = c.DoGraphQL(ctx, closedQuery, nil, &cr) // ignore error — CLOSED may not exist
+
+	type minFulfillment struct {
+		OrderID   int
+		OrderDate string
+	}
+	var allFulfillments []minFulfillment
+	for _, f := range openFulfillments {
+		allFulfillments = append(allFulfillments, minFulfillment{OrderID: f.OrderID, OrderDate: f.Delivery.Slot.Date})
+	}
+	for _, f := range cr.OrderFulfillments.Result {
+		allFulfillments = append(allFulfillments, minFulfillment{OrderID: f.OrderID, OrderDate: f.Delivery.Slot.Date})
+	}
+
+	type productStats struct {
+		Name          string
+		Count         int
+		LastOrderDate string
+	}
+	stats := map[int]*productStats{}
+
+	for _, f := range allFulfillments {
+		orderDate := f.OrderDate
+
+		order, oErr := c.GetOrderDetails(ctx, f.OrderID)
+		if oErr != nil {
+			fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] Warning: could not fetch order %d: %v\n", f.OrderID, oErr)
+			continue
+		}
+		seen := map[int]bool{}
+		for _, item := range order.Items {
+			pid := item.ProductID
+			if seen[pid] {
+				continue
+			}
+			seen[pid] = true
+
+			name := ""
+			if item.Product != nil {
+				name = item.Product.Title
+			}
+			if name == "" {
+				name = strconv.Itoa(pid)
+			}
+
+			if stats[pid] == nil {
+				stats[pid] = &productStats{Name: name}
+			}
+			stats[pid].Count++
+			// Keep latest date
+			if orderDate > stats[pid].LastOrderDate {
+				stats[pid].LastOrderDate = orderDate
+				stats[pid].Name = name // update name in case it was empty before
+			}
+		}
+	}
+
+	freq := make([]frequentProduct, 0, len(stats))
+	for pid, s := range stats {
+		lastDate := s.LastOrderDate
+		if t, err := time.Parse("2006-01-02", lastDate); err == nil {
+			lastDate = t.Format("2006-01-02")
+		}
+		freq = append(freq, frequentProduct{
+			ProductID:     pid,
+			Name:          s.Name,
+			Count:         s.Count,
+			LastOrderDate: lastDate,
+		})
+	}
+	sort.Slice(freq, func(i, j int) bool { return freq[i].Count > freq[j].Count })
+
+	if data, err := json.Marshal(freq); err == nil {
+		GlobalCache.Set(cacheKey, data, 30*time.Minute)
+	}
+	return freq, nil
 }
 
 // --- ah_get_receipts ---
