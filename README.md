@@ -291,6 +291,7 @@ Tokens are stored automatically at `/home/ah-mcp/.config/ah-mcp/tokens.json` —
 |---|---|
 | `ah_get_receipts` | List recent in-store receipts (kassabonnen) with dates and totals. |
 | `ah_get_receipt_details` | Full item breakdown, discounts, and payment method for one receipt. |
+| `ah_get_savings_summary` | Total discount over a period (default: this month) from in-store receipts: split by bonus/premium/miles/koopzegels, top discounted products, koopzegels bought, per-receipt breakdown. |
 
 ### Member
 
