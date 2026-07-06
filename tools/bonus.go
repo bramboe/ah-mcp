@@ -391,32 +391,37 @@ func registerGetPersonalBonusOffers(s *server.MCPServer, deps Deps) {
 	})
 }
 
-// fetchPersonalOffers retrieves member-specific offers. It prefers the
-// PERSONAL section URLs advertised in the (authenticated) bonus metadata and
-// falls back to the well-known personal section endpoint when the metadata
-// does not list any.
+// fetchPersonalOffers retrieves member-specific offers from the dedicated
+// personal bonus section (sectionType "PO" / "Persoonlijke Bonus"). The
+// endpoint returns 200 with an empty list for accounts without personal
+// offers. As a secondary source, PERSONAL/PREMIUM tabs advertised in the
+// bonus metadata are scanned too.
 func fetchPersonalOffers(ctx context.Context, c *appie.Client) ([]bonusOfferItem, error) {
-	meta, err := fetchBonusMetadata(ctx, c)
+	today := time.Now().Format("2006-01-02")
+
+	relURL := fmt.Sprintf("bonuspage/v2/section/personal?application=AHWEBSHOP&date=%s", today)
+	offers, err := fetchSectionOffers(ctx, c, relURL)
 	if err != nil {
 		return nil, err
 	}
+	if len(offers) > 0 {
+		return offers, nil
+	}
 
-	today := time.Now().Format("2006-01-02")
+	// Secondary: some accounts get personal deals via dedicated metadata tabs.
+	meta, err := fetchBonusMetadata(ctx, c)
+	if err != nil {
+		return offers, nil //nolint:nilerr — primary source succeeded; metadata is best-effort
+	}
 	for i := range meta.Periods {
 		p := &meta.Periods[i]
 		if p.BonusStartDate > today || p.BonusEndDate < today {
 			continue
 		}
-		offers, err := collectTabOffers(ctx, c, p, "PERSONAL", "PREMIUM", "FREE_DELIVERY")
-		if err != nil {
-			return nil, err
-		}
-		if len(offers) > 0 {
-			return offers, nil
+		tabOffers, err := collectTabOffers(ctx, c, p, "PERSONAL", "PREMIUM")
+		if err == nil && len(tabOffers) > 0 {
+			return tabOffers, nil
 		}
 	}
-
-	// Fallback: query the personal promotion section directly.
-	relURL := fmt.Sprintf("bonuspage/v2/section?application=AHWEBSHOP&date=%s&promotionType=PERSONAL", today)
-	return fetchSectionOffers(ctx, c, relURL)
+	return offers, nil
 }
