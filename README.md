@@ -242,6 +242,8 @@ Tokens are stored automatically at `/home/ah-mcp/.config/ah-mcp/tokens.json` —
 | `ah_get_product` | Full detail for one product by ID. Add `include_nutritional_info=true` for calories, fat, protein, etc. |
 | `ah_get_bonus_offers` | All current bonus/promotional offers. Optional keyword filter. |
 | `ah_get_bonus_group_products` | All products in a specific bonus deal group (e.g. "2+1 gratis"). Use `segment_id` from `ah_get_bonus_offers`. |
+| `ah_get_upcoming_bonus_offers` | NEXT week's bonus offers, before they start. AH publishes them a few days ahead (typically from Friday); before that the tool reports from which date they become visible. |
+| `ah_get_personal_bonus_offers` | Your personal bonus offers (persoonlijke bonus / bonus box) — member-specific deals on top of the weekly bonus. |
 | `ah_get_last_chance_items` | Vandaag-af / clearance items from a specific store. |
 | `ah_search_stores` | Find AH stores near a postal code (or your registered address). |
 

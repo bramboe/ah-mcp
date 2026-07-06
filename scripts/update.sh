@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-REPO="mrserzhan/ah-mcp"
+REPO="bramboe/ah-mcp"
 ARCH="linux-amd64"          # change to linux-arm64 if needed
 INSTALL_PATH="/usr/local/bin/ah-mcp"
 SERVICE_NAME="ah-mcp"
