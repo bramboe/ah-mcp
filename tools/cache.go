@@ -46,6 +46,13 @@ func (c *Cache) Set(key string, data []byte, ttl time.Duration) {
 	c.entries[key] = cacheEntry{data: data, expiresAt: time.Now().Add(ttl)}
 }
 
+// Clear removes all entries, e.g. on logout so no data leaks across accounts.
+func (c *Cache) Clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries = make(map[string]cacheEntry)
+}
+
 // Invalidate removes all entries whose key starts with prefix.
 func (c *Cache) Invalidate(prefix string) {
 	c.mu.Lock()

@@ -25,6 +25,13 @@ var matchStopwords = map[string]bool{
 	"GRAM": true, "GR": true, "KG": true, "ML": true, "LITER": true,
 	"STUK": true, "STUKS": true, "PAK": true, "PAKKEN": true, "ZAK": true,
 	"FLES": true, "VERPAKKING": true, "VOORDEELPAKKEN": true,
+	// Generic descriptors that create false positives ("AH Biologisch
+	// yoghurt" should not match "Alle AH Biologisch kaas" on BIOLOGISCH).
+	"BIOLOGISCH": true, "BIOLOGISCHE": true, "BIO": true,
+	"LEKKER": true, "LEKKERE": true, "LATER": true, "READY": true,
+	"VERS": true, "VERSE": true, "EXTRA": true, "MINI": true,
+	"KLEINVERPAKKING": true, "VOORDEELPAK": true, "VERSAFDELING": true,
+	"ZELFBEDIENINGSAFDELING": true,
 }
 
 // titleTokens reduces a product/offer title to significant match tokens.
@@ -131,18 +138,7 @@ func registerGetBonusForFrequentItems(s *server.MCPServer, deps Deps) {
 		if err != nil {
 			return errResult(fmt.Sprintf("Failed to get bonus metadata: %v", err)), nil
 		}
-		var current, upcoming *bonusPeriodResp
-		for i := range meta.Periods {
-			p := &meta.Periods[i]
-			switch {
-			case p.BonusStartDate > today:
-				if upcoming == nil || p.BonusStartDate < upcoming.BonusStartDate {
-					upcoming = p
-				}
-			case p.BonusEndDate >= today:
-				current = p
-			}
-		}
+		current, upcoming := selectPeriods(meta, today)
 		selected := current
 		if period == "next" {
 			selected = upcoming

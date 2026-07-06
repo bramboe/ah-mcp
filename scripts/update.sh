@@ -18,14 +18,14 @@ SERVICE_NAME="ah-mcp"
 SERVICE_PATH="/etc/systemd/system/ah-mcp.service"
 TOKEN_FILE="/home/ah-mcp/.github_token"
 
-# ── Auth ──────────────────────────────────────────────────────────────────────
-if [[ ! -f "$TOKEN_FILE" ]]; then
-  echo "ERROR: GitHub token not found at $TOKEN_FILE"
-  echo "  Create it with: echo 'ghp_...' > $TOKEN_FILE && chmod 600 $TOKEN_FILE"
-  exit 1
+# ── Auth (optional — only needed for private repos or API rate limits) ───────
+AUTH=()
+if [[ -f "$TOKEN_FILE" ]]; then
+  GITHUB_TOKEN=$(cat "$TOKEN_FILE")
+  AUTH=(-H "Authorization: token $GITHUB_TOKEN")
+else
+  echo "No GitHub token at $TOKEN_FILE — using unauthenticated API (fine for public repos)"
 fi
-GITHUB_TOKEN=$(cat "$TOKEN_FILE")
-AUTH=(-H "Authorization: token $GITHUB_TOKEN")
 
 # ── Latest release tag ────────────────────────────────────────────────────────
 echo "Fetching latest release tag..."

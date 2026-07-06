@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -120,6 +121,30 @@ func snapshotOffer(n int) (bonusOfferItem, bool) {
 	return personalSnapshot.offers[n-1], true
 }
 
+// clearPersonalSnapshot drops the numbered offer snapshot (e.g. on logout).
+func clearPersonalSnapshot() {
+	personalSnapshot.Lock()
+	personalSnapshot.offers = nil
+	personalSnapshot.Unlock()
+}
+
+// selectPeriods splits the metadata periods into the one covering today and
+// the earliest upcoming one (nil when absent).
+func selectPeriods(meta *bonusMetadataResp, today string) (current, upcoming *bonusPeriodResp) {
+	for i := range meta.Periods {
+		p := &meta.Periods[i]
+		switch {
+		case p.BonusStartDate > today:
+			if upcoming == nil || p.BonusStartDate < upcoming.BonusStartDate {
+				upcoming = p
+			}
+		case p.BonusEndDate >= today:
+			current = p
+		}
+	}
+	return current, upcoming
+}
+
 func (p *sectionProductResp) toOffer() bonusOfferItem {
 	it := bonusOfferItem{
 		ID:               p.WebshopID,
@@ -220,7 +245,9 @@ func sectionToOffers(section bonusSectionResp) []bonusOfferItem {
 }
 
 // collectTabOffers fetches all section URLs of a period that match one of the
-// given bonus types, deduplicating both URLs and resulting offers.
+// given bonus types, deduplicating both URLs and resulting offers. Sections
+// are fetched concurrently (a period has ~30 of them); the merged result
+// keeps the tab order so output stays deterministic.
 func collectTabOffers(ctx context.Context, c *appie.Client, period *bonusPeriodResp, bonusTypes ...string) ([]bonusOfferItem, error) {
 	wanted := make(map[string]bool, len(bonusTypes))
 	for _, t := range bonusTypes {
@@ -228,24 +255,44 @@ func collectTabOffers(ctx context.Context, c *appie.Client, period *bonusPeriodR
 	}
 
 	seenURL := make(map[string]bool)
-	seenOffer := make(map[string]bool)
-	var offers []bonusOfferItem
+	var urls, descs []string
 	for _, tab := range period.Tabs {
 		for _, meta := range tab.URLMetadataList {
 			if !wanted[meta.BonusType] || seenURL[meta.URL] {
 				continue
 			}
 			seenURL[meta.URL] = true
-			sectionOffers, err := fetchSectionOffers(ctx, c, meta.URL)
-			if err != nil {
-				return nil, fmt.Errorf("section %q: %w", meta.Description, err)
-			}
-			for _, o := range sectionOffers {
-				key := fmt.Sprintf("%d:%s:%s", o.ID, o.BonusSegmentID, o.Title)
-				if !seenOffer[key] {
-					seenOffer[key] = true
-					offers = append(offers, o)
-				}
+			urls = append(urls, meta.URL)
+			descs = append(descs, meta.Description)
+		}
+	}
+
+	sections := make([][]bonusOfferItem, len(urls))
+	errs := make([]error, len(urls))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 5)
+	for i, u := range urls {
+		wg.Add(1)
+		go func(i int, u string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			sections[i], errs[i] = fetchSectionOffers(ctx, c, u)
+		}(i, u)
+	}
+	wg.Wait()
+
+	seenOffer := make(map[string]bool)
+	var offers []bonusOfferItem
+	for i := range urls {
+		if errs[i] != nil {
+			return nil, fmt.Errorf("section %q: %w", descs[i], errs[i])
+		}
+		for _, o := range sections[i] {
+			key := fmt.Sprintf("%d:%s:%s", o.ID, o.BonusSegmentID, o.Title)
+			if !seenOffer[key] {
+				seenOffer[key] = true
+				offers = append(offers, o)
 			}
 		}
 	}
@@ -286,6 +333,129 @@ func RegisterBonusTools(s *server.MCPServer, deps Deps) {
 	registerGetUpcomingBonusOffers(s, deps)
 	registerGetPersonalBonusOffers(s, deps)
 	registerActivatePersonalBonus(s, deps)
+	registerGetBonusOffersByType(s, deps)
+}
+
+// --- ah_get_bonus_offers_by_type ---
+
+func registerGetBonusOffersByType(s *server.MCPServer, deps Deps) {
+	tool := mcp.NewTool("ah_get_bonus_offers_by_type",
+		mcp.WithTitleAnnotation("Albert Heijn: Bonus Offers by Type"),
+		mcp.WithDescription(
+			"Get Albert Heijn bonus offers of a specific type beyond the regular weekly bonus: "+
+				"PREMIUM (AH Premium member deals), AHONLINE (online-only deals), "+
+				"ETOS (Etos deals), GALL (Gall & Gall deals), GALLCARD (Gall & Gall loyalty card). "+
+				"The available types depend on the account and week; when the requested type is not "+
+				"available the response lists which types are. "+
+				"For the regular bonus use ah_get_bonus_offers; for personal offers ah_get_personal_bonus_offers.",
+		),
+		mcp.WithString("bonus_type",
+			mcp.Required(),
+			mcp.Description("Bonus type, e.g. 'PREMIUM', 'AHONLINE', 'ETOS', 'GALL', 'GALLCARD'"),
+		),
+		mcp.WithString("period",
+			mcp.Description("'current' (default) or 'next' for next week's offers"),
+		),
+		mcp.WithString("limit",
+			mcp.Description("Maximum number of offers to return (default 20)"),
+		),
+		mcp.WithString("query",
+			mcp.Description("Optional keyword filter (Dutch or English) applied client-side"),
+		),
+	)
+	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if !deps.IsAuthenticated() {
+			return notAuthResult(), nil
+		}
+		if err := refreshTokens(ctx, deps); err != nil {
+			return errResult(fmt.Sprintf("Token refresh failed: %v", err)), nil
+		}
+		c, err := deps.GetClient()
+		if err != nil {
+			return errResult(fmt.Sprintf("Client error: %v", err)), nil
+		}
+
+		bonusType := strings.ToUpper(strings.TrimSpace(req.GetString("bonus_type", "")))
+		if bonusType == "" {
+			return errResult("bonus_type is required"), nil
+		}
+		period := req.GetString("period", "current")
+		if period != "current" && period != "next" {
+			return errResult("period must be 'current' or 'next'"), nil
+		}
+		limit := req.GetInt("limit", 20)
+		query := req.GetString("query", "")
+		start := time.Now()
+		today := time.Now().Format("2006-01-02")
+
+		meta, err := fetchBonusMetadata(ctx, c)
+		if err != nil {
+			return errResult(fmt.Sprintf("Failed to get bonus metadata: %v", err)), nil
+		}
+		current, upcoming := selectPeriods(meta, today)
+		selected := current
+		if period == "next" {
+			selected = upcoming
+		}
+		if selected == nil {
+			msg := fmt.Sprintf("No %s bonus period available.", period)
+			if period == "next" && current != nil && current.NextPeriodVisibleFrom != "" {
+				msg = fmt.Sprintf("Next week's offers are not published yet; they become visible from %s.",
+					current.NextPeriodVisibleFrom)
+			}
+			return jsonResult(map[string]any{"available": false, "message": msg})
+		}
+
+		// Which types does this period actually offer?
+		available := map[string]bool{}
+		for _, tab := range selected.Tabs {
+			for _, m := range tab.URLMetadataList {
+				available[m.BonusType] = true
+			}
+		}
+		if !available[bonusType] {
+			types := make([]string, 0, len(available))
+			for t := range available {
+				types = append(types, t)
+			}
+			sort.Strings(types)
+			return jsonResult(map[string]any{
+				"available":       false,
+				"message":         fmt.Sprintf("No %s offers in this period for this account.", bonusType),
+				"available_types": types,
+			})
+		}
+
+		cacheKey := fmt.Sprintf("bonus:type:%s:%s", bonusType, selected.BonusStartDate)
+		var offers []bonusOfferItem
+		if cached, ok := GlobalCache.Get(cacheKey); ok {
+			if err := unmarshalCached(cached, &offers); err == nil {
+				LogInfo("ah_get_bonus_offers_by_type", "cache_hit type=%s duration=%v", bonusType, time.Since(start))
+				return jsonResult(map[string]any{
+					"available": true, "bonus_type": bonusType,
+					"period_start": selected.BonusStartDate, "period_end": selected.BonusEndDate,
+					"offers": filterOffers(offers, query, limit),
+				})
+			}
+		}
+
+		if err := withRetry(ctx, "ah_get_bonus_offers_by_type", func() error {
+			var e error
+			offers, e = collectTabOffers(ctx, c, selected, bonusType)
+			return e
+		}); err != nil {
+			LogError("ah_get_bonus_offers_by_type", "type=%s err=%v", bonusType, err)
+			return errResult(fmt.Sprintf("Failed to get %s offers: %v", bonusType, err)), nil
+		}
+		cacheOffers(cacheKey, offers)
+
+		LogInfo("ah_get_bonus_offers_by_type", "type=%s offers=%d duration=%v", bonusType, len(offers), time.Since(start))
+		return jsonResult(map[string]any{
+			"available": true, "bonus_type": bonusType,
+			"period_start": selected.BonusStartDate, "period_end": selected.BonusEndDate,
+			"offers": filterOffers(offers, query, limit),
+		})
+	})
 }
 
 // --- ah_activate_personal_bonus ---
@@ -479,21 +649,8 @@ func registerGetUpcomingBonusOffers(s *server.MCPServer, deps Deps) {
 			return errResult(fmt.Sprintf("Failed to get bonus metadata: %v", err)), nil
 		}
 
-		// The upcoming period is any period that starts after today. The
-		// current period is the one covering today; AH adds the next period
-		// to the metadata a few days before it starts.
-		var upcoming *bonusPeriodResp
-		var current *bonusPeriodResp
-		for i := range meta.Periods {
-			p := &meta.Periods[i]
-			if p.BonusStartDate > today {
-				if upcoming == nil || p.BonusStartDate < upcoming.BonusStartDate {
-					upcoming = p
-				}
-			} else if p.BonusEndDate >= today {
-				current = p
-			}
-		}
+		// AH adds the next period to the metadata a few days before it starts.
+		current, upcoming := selectPeriods(meta, today)
 
 		if upcoming == nil {
 			resp := response{
