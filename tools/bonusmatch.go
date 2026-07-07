@@ -69,6 +69,95 @@ func sharedTokens(a, b map[string]bool) []string {
 	return shared
 }
 
+// groupProductsQuery resolves the individual products of a bonus promotion
+// group. Adapted from appie-go's group query, but with explicit period dates
+// so it also works for next week's offers (the library hardcodes the current
+// period).
+const groupProductsQuery = `query FetchBonusPromotionWithProducts(
+  $id: String, $periodStart: String, $periodEnd: String
+) {
+  bonusPromotions(input: {
+    id: $id, periodStart: $periodStart, periodEnd: $periodEnd,
+    filterUnavailableProducts: true, forcePromotionVisibility: true,
+    showAllPromotionSegments: true
+  }) {
+    id
+    products {
+      id
+      title
+      priceV2(
+        periodStart: $periodStart, periodEnd: $periodEnd,
+        filterUnavailableProducts: true, forcePromotionVisibility: true
+      ) {
+        now { amount }
+        was { amount }
+        promotionLabel { tiers { description } }
+      }
+    }
+  }
+}`
+
+type groupProduct struct {
+	ID        int
+	Title     string
+	PriceNow  float64
+	PriceWas  float64
+	Mechanism string
+}
+
+// fetchGroupProducts returns the products of a bonus group for a period,
+// cached for 30 minutes.
+func fetchGroupProducts(ctx context.Context, c *appie.Client, segmentID, periodStart, periodEnd string) ([]groupProduct, error) {
+	cacheKey := fmt.Sprintf("bonus:group:%s:%s", segmentID, periodStart)
+	if cached, ok := GlobalCache.Get(cacheKey); ok {
+		var products []groupProduct
+		if err := unmarshalCached(cached, &products); err == nil {
+			return products, nil
+		}
+	}
+
+	var resp struct {
+		BonusPromotions []struct {
+			Products []struct {
+				ID      int    `json:"id"`
+				Title   string `json:"title"`
+				PriceV2 struct {
+					Now struct {
+						Amount float64 `json:"amount"`
+					} `json:"now"`
+					Was struct {
+						Amount float64 `json:"amount"`
+					} `json:"was"`
+					PromotionLabel *struct {
+						Tiers []struct {
+							Description string `json:"description"`
+						} `json:"tiers"`
+					} `json:"promotionLabel"`
+				} `json:"priceV2"`
+			} `json:"products"`
+		} `json:"bonusPromotions"`
+	}
+	variables := map[string]any{"id": segmentID, "periodStart": periodStart, "periodEnd": periodEnd}
+	if err := c.DoGraphQL(ctx, groupProductsQuery, variables, &resp); err != nil {
+		return nil, err
+	}
+
+	var products []groupProduct
+	if len(resp.BonusPromotions) > 0 {
+		for _, p := range resp.BonusPromotions[0].Products {
+			gp := groupProduct{ID: p.ID, Title: p.Title, PriceNow: p.PriceV2.Now.Amount, PriceWas: p.PriceV2.Was.Amount}
+			if p.PriceV2.PromotionLabel != nil && len(p.PriceV2.PromotionLabel.Tiers) > 0 {
+				gp.Mechanism = p.PriceV2.PromotionLabel.Tiers[0].Description
+			}
+			products = append(products, gp)
+		}
+	}
+	if data, err := json.Marshal(products); err == nil {
+		GlobalCache.Set(cacheKey, data, 30*time.Minute)
+	}
+	return products, nil
+}
+
 // periodOffers returns the NATIONAL+SPOTLIGHT offers of a bonus period,
 // cached for 30 minutes (a full fetch is ~30 section calls).
 func periodOffers(ctx context.Context, c *appie.Client, period *bonusPeriodResp) ([]bonusOfferItem, error) {
@@ -187,14 +276,15 @@ func registerGetBonusForFrequentItems(s *server.MCPServer, deps Deps) {
 		}
 
 		type match struct {
-			ProductID   int            `json:"product_id"`
-			ProductName string         `json:"product_name"`
-			OrderCount  int            `json:"order_count"`
-			LastOrdered string         `json:"last_ordered,omitempty"`
-			MatchType   string         `json:"match_type"`
-			MatchedOn   []string       `json:"matched_on,omitempty"`
-			Personal    bool           `json:"personal,omitempty"`
-			Offer       bonusOfferItem `json:"offer"`
+			ProductID       int            `json:"product_id"`
+			ProductName     string         `json:"product_name"`
+			OrderCount      int            `json:"order_count"`
+			LastOrdered     string         `json:"last_ordered,omitempty"`
+			MatchType       string         `json:"match_type"`
+			MatchedOn       []string       `json:"matched_on,omitempty"`
+			Personal        bool           `json:"personal,omitempty"`
+			ResolvedExample string         `json:"resolved_example,omitempty"`
+			Offer           bonusOfferItem `json:"offer"`
 		}
 		matches := make([]match, 0)
 		for _, f := range freq {
@@ -229,6 +319,42 @@ func registerGetBonusForFrequentItems(s *server.MCPServer, deps Deps) {
 				m.MatchedOn = sharedTokens(pTokens, offerTokens[bestIdx])
 			}
 			matches = append(matches, m)
+		}
+
+		// Group deals (e.g. "2 VOOR 2.50") have no per-product bonus_price on
+		// the section entry. Resolve the real price via the group endpoint:
+		// prefer the specifically matched product, else the group's cheapest.
+		// Capped to bound latency; results are cached 30m.
+		const maxResolve = 15
+		resolved := 0
+		for i := range matches {
+			off := &matches[i].Offer
+			if off.BonusPrice > 0 || off.BonusSegmentID == "" || resolved >= maxResolve {
+				continue
+			}
+			resolved++
+			products, gErr := fetchGroupProducts(ctx, c, off.BonusSegmentID, selected.BonusStartDate, selected.BonusEndDate)
+			if gErr != nil || len(products) == 0 {
+				continue
+			}
+			chosen := products[0]
+			for _, gp := range products {
+				if gp.ID == matches[i].ProductID {
+					chosen = gp
+					break
+				}
+				if gp.PriceNow > 0 && (chosen.PriceNow == 0 || gp.PriceNow < chosen.PriceNow) {
+					chosen = gp
+				}
+			}
+			off.BonusPrice = chosen.PriceNow
+			if off.OriginalPrice == 0 {
+				off.OriginalPrice = chosen.PriceWas
+			}
+			if off.OriginalPrice > 0 && off.BonusPrice > 0 {
+				off.DiscountPercentage = (1 - off.BonusPrice/off.OriginalPrice) * 100
+			}
+			matches[i].ResolvedExample = chosen.Title
 		}
 
 		LogInfo("ah_get_bonus_for_frequent_items", "period=%s offers=%d frequent=%d matches=%d duration=%v",

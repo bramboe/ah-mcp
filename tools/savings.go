@@ -109,8 +109,8 @@ func registerGetSavingsSummary(s *server.MCPServer, deps Deps) {
 				"total paid, total discount, split by category (bonus / premium / miles / koopzegels), "+
 				"top discounted products, koopzegels bought, and per-receipt breakdown. "+
 				"Use when the user asks e.g. how much bonus discount they got this month. "+
-				"Defaults to the current calendar month. Note: only in-store receipts are included "+
-				"(online orders are not), and there is no live koopzegels balance in the AH API.",
+				"Includes both in-store receipts (kassabonnen) and online delivery orders. "+
+				"Defaults to the current calendar month. Note: there is no live koopzegels balance in the AH API.",
 		),
 		mcp.WithString("month",
 			mcp.Description("Calendar month YYYY-MM, e.g. '2026-06' (alternative to from_date/to_date)"),
@@ -120,6 +120,9 @@ func registerGetSavingsSummary(s *server.MCPServer, deps Deps) {
 		),
 		mcp.WithString("to_date",
 			mcp.Description("End date YYYY-MM-DD (inclusive, defaults to today)"),
+		),
+		mcp.WithString("include_online",
+			mcp.Description("Include online delivery orders (default 'true'); set 'false' for in-store receipts only"),
 		),
 	)
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -186,6 +189,7 @@ func registerGetSavingsSummary(s *server.MCPServer, deps Deps) {
 			From               string             `json:"from"`
 			To                 string             `json:"to"`
 			ReceiptCount       int                `json:"receipt_count"`
+			OnlineOrderCount   int                `json:"online_order_count"`
 			FailedReceipts     int                `json:"failed_receipts,omitempty"`
 			TotalPaid          float64            `json:"total_paid"`
 			TotalDiscount      float64            `json:"total_discount"`
@@ -194,6 +198,7 @@ func registerGetSavingsSummary(s *server.MCPServer, deps Deps) {
 			KoopzegelsBought   float64            `json:"koopzegels_bought,omitempty"`
 			TopDiscounts       []discountLine     `json:"top_discounts,omitempty"`
 			Receipts           []*receiptStats    `json:"receipts"`
+			OnlineOrders       []onlineOrderStat  `json:"online_orders,omitempty"`
 		}
 		out := summary{
 			From:               from,
@@ -220,6 +225,23 @@ func registerGetSavingsSummary(s *server.MCPServer, deps Deps) {
 			}
 			out.Receipts = append(out.Receipts, st)
 		}
+
+		// Online delivery orders carry an order-level discount (bonus applied
+		// at checkout) that never appears on in-store receipts.
+		if !strings.EqualFold(req.GetString("include_online", "true"), "false") {
+			orders, oErr := fetchOnlineOrderSavings(ctx, c, from, to)
+			if oErr != nil {
+				LogError("ah_get_savings_summary", "online orders err=%v", oErr)
+			}
+			for _, o := range orders {
+				out.OnlineOrderCount++
+				out.TotalPaid += o.TotalPaid
+				out.TotalDiscount += o.Discount
+				out.DiscountByCategory["online"] += o.Discount
+				out.OnlineOrders = append(out.OnlineOrders, o)
+			}
+		}
+
 		if gross := out.TotalPaid + out.TotalDiscount; gross > 0 {
 			out.DiscountPercentage = out.TotalDiscount / gross * 100
 		}
@@ -232,10 +254,80 @@ func registerGetSavingsSummary(s *server.MCPServer, deps Deps) {
 		}
 		sort.Slice(out.Receipts, func(i, j int) bool { return out.Receipts[i].Date > out.Receipts[j].Date })
 
-		LogInfo("ah_get_savings_summary", "from=%s to=%s receipts=%d discount=%.2f duration=%v",
-			from, to, out.ReceiptCount, out.TotalDiscount, time.Since(start))
+		LogInfo("ah_get_savings_summary", "from=%s to=%s receipts=%d orders=%d discount=%.2f duration=%v",
+			from, to, out.ReceiptCount, out.OnlineOrderCount, out.TotalDiscount, time.Since(start))
 		return jsonResult(out)
 	})
+}
+
+// onlineOrderStat is one online delivery order's savings contribution.
+type onlineOrderStat struct {
+	OrderID   int     `json:"order_id"`
+	Date      string  `json:"date,omitempty"`
+	TotalPaid float64 `json:"total_paid"`
+	Discount  float64 `json:"discount"`
+}
+
+// fetchOnlineOrderSavings returns closed online delivery orders whose delivery
+// date falls in [from, to], with their order-level discount and paid total.
+func fetchOnlineOrderSavings(ctx context.Context, c *appie.Client, from, to string) ([]onlineOrderStat, error) {
+	const query = `query OrderFulfillmentsClosed {
+  orderFulfillments(status: CLOSED) {
+    result {
+      orderId
+      totalPrice {
+        discount { amount }
+        totalPrice { amount }
+      }
+      delivery { slot { date } }
+    }
+  }
+}`
+	var resp struct {
+		OrderFulfillments struct {
+			Result []struct {
+				OrderID    int `json:"orderId"`
+				TotalPrice struct {
+					Discount struct {
+						Amount float64 `json:"amount"`
+					} `json:"discount"`
+					TotalPrice struct {
+						Amount float64 `json:"amount"`
+					} `json:"totalPrice"`
+				} `json:"totalPrice"`
+				Delivery struct {
+					Slot struct {
+						Date string `json:"date"`
+					} `json:"slot"`
+				} `json:"delivery"`
+			} `json:"result"`
+		} `json:"orderFulfillments"`
+	}
+	if err := c.DoGraphQL(ctx, query, nil, &resp); err != nil {
+		return nil, err
+	}
+
+	var orders []onlineOrderStat
+	for _, r := range resp.OrderFulfillments.Result {
+		day := r.Delivery.Slot.Date
+		if len(day) > 10 {
+			day = day[:10]
+		}
+		if day < from || day > to {
+			continue
+		}
+		discount := r.TotalPrice.Discount.Amount
+		if discount < 0 {
+			discount = -discount
+		}
+		orders = append(orders, onlineOrderStat{
+			OrderID:   r.OrderID,
+			Date:      day,
+			TotalPaid: r.TotalPrice.TotalPrice.Amount,
+			Discount:  discount,
+		})
+	}
+	return orders, nil
 }
 
 // resolvePeriod turns month / from_date / to_date parameters into an
