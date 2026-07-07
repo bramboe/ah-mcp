@@ -19,13 +19,13 @@ import (
 )
 
 const (
-	ahAPIBase        = "https://api.ah.nl"
-	ahLoginBase      = "https://login.ah.nl"
-	ahClientID       = "appie-ios"
-	ahClientVersion  = "9.28"
-	ahUserAgent      = "Appie/9.28 (iPhone17,3; iPhone; CPU OS 26_1 like Mac OS X)"
-	oauthTimeout     = 5 * time.Minute
-	tokenRefreshBuf  = 60 * time.Second
+	ahAPIBase       = "https://api.ah.nl"
+	ahLoginBase     = "https://login.ah.nl"
+	ahClientID      = "appie-ios"
+	ahClientVersion = "9.28"
+	ahUserAgent     = "Appie/9.28 (iPhone17,3; iPhone; CPU OS 26_1 like Mac OS X)"
+	oauthTimeout    = 5 * time.Minute
+	tokenRefreshBuf = 60 * time.Second
 
 	loginSuccessHTML = `<!DOCTYPE html>
 <html><head><title>Login Successful</title></head>

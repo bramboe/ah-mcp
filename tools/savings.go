@@ -74,7 +74,7 @@ func fetchReceiptStats(ctx context.Context, c *appie.Client, id, date string, to
 
 	st := receiptStats{
 		ID:                 id,
-		Date:               date,
+		Date:               normalizeDay(date),
 		TotalPaid:          totalPaid,
 		DiscountByCategory: map[string]float64{},
 	}
@@ -328,6 +328,16 @@ func fetchOnlineOrderSavings(ctx context.Context, c *appie.Client, from, to stri
 		})
 	}
 	return orders, nil
+}
+
+// normalizeDay reduces any receipt/order date string to a plain YYYY-MM-DD.
+// Receipts arrive as ISO ("2026-06-27T09:00:00.000Z") or "YYYY-MM-DD HH:MM";
+// online orders as plain "YYYY-MM-DD". This keeps the summary consistent.
+func normalizeDay(date string) string {
+	if len(date) >= 10 {
+		return date[:10]
+	}
+	return date
 }
 
 // resolvePeriod turns month / from_date / to_date parameters into an
