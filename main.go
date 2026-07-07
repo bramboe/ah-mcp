@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bramboe/ah-mcp/tools"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/mrserzhan/ah-mcp/tools"
 )
 
 // version is set at build time via -ldflags="-X main.version=v1.2.3"
@@ -85,8 +85,8 @@ func main() {
 		RemoteMode:    *remote,
 		ServerVersion: version,
 		AppieVersion:  appieVersion(),
-		GetClient:    GetClient,
-		ReloadClient: ReloadClient,
+		GetClient:     GetClient,
+		ReloadClient:  ReloadClient,
 		IsAuthenticated: func() bool {
 			return IsAuthenticated(tokensPath)
 		},
