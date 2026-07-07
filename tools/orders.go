@@ -629,11 +629,6 @@ func registerGetCart(s *server.MCPServer, deps Deps) {
 			return errResult(fmt.Sprintf("Client error: %v", err)), nil
 		}
 
-		order, err := c.GetOrder(ctx)
-		if err != nil {
-			return errResult(fmt.Sprintf("Failed to get cart: %v", err)), nil
-		}
-
 		type cartItem struct {
 			ProductID int     `json:"product_id"`
 			Name      string  `json:"name,omitempty"`
@@ -647,6 +642,30 @@ func registerGetCart(s *server.MCPServer, deps Deps) {
 			TotalPrice    float64    `json:"total_price"`
 			TotalDiscount float64    `json:"total_discount,omitempty"`
 		}
+
+		order, err := c.GetOrder(ctx)
+		if isNoActiveOrder(err) {
+			// No online order — show the GraphQL app basket instead.
+			basket, bErr := fetchBasketQL(ctx, c)
+			if bErr != nil {
+				return errResult(fmt.Sprintf("Failed to get cart: %v (basket fallback: %v)", err, bErr)), nil
+			}
+			result := cartResult{ID: basket.Basket.ID, State: "BASKET", Items: []cartItem{}}
+			for _, it := range basket.Basket.Items {
+				ci := cartItem{ProductID: it.ID, Quantity: it.Quantity}
+				if it.Product != nil {
+					ci.Name = it.Product.Title
+					ci.Price = it.Product.PriceV2.Now.Amount
+				}
+				result.Items = append(result.Items, ci)
+				result.TotalPrice += ci.Price * float64(ci.Quantity)
+			}
+			return jsonResult(result)
+		}
+		if err != nil {
+			return errResult(fmt.Sprintf("Failed to get cart: %v", err)), nil
+		}
+
 		items := make([]cartItem, 0, len(order.Items))
 		for _, it := range order.Items {
 			ci := cartItem{ProductID: it.ProductID, Quantity: it.Quantity}
@@ -689,6 +708,23 @@ func registerGetCartSummary(s *server.MCPServer, deps Deps) {
 		}
 
 		summary, err := c.GetOrderSummary(ctx)
+		if isNoActiveOrder(err) {
+			basket, bErr := fetchBasketQL(ctx, c)
+			if bErr != nil {
+				return errResult(fmt.Sprintf("Failed to get cart summary: %v (basket fallback: %v)", err, bErr)), nil
+			}
+			total := 0.0
+			count := 0
+			for _, it := range basket.Basket.Items {
+				count += it.Quantity
+				if it.Product != nil {
+					total += it.Product.PriceV2.Now.Amount * float64(it.Quantity)
+				}
+			}
+			return jsonResult(map[string]any{
+				"state": "BASKET", "total_items": count, "total_price": total,
+			})
+		}
 		if err != nil {
 			return errResult(fmt.Sprintf("Failed to get cart summary: %v", err)), nil
 		}
@@ -739,7 +775,17 @@ func registerUpdateCartItem(s *server.MCPServer, deps Deps) {
 		// GetOrder must be called first so the client caches the active order ID,
 		// which is sent as the Appie-Current-Order-Id header on write requests.
 		if _, err := c.GetOrder(ctx); err != nil {
-			return errResult(fmt.Sprintf("Failed to get active order: %v", err)), nil
+			if !isNoActiveOrder(err) {
+				return errResult(fmt.Sprintf("Failed to get active order: %v", err)), nil
+			}
+			// No online order — update the GraphQL app basket instead.
+			if err := updateBasketQL(ctx, c, map[int]int{productID: quantity}); err != nil {
+				return errResult(fmt.Sprintf("Failed to update basket item %d: %v", productID, err)), nil
+			}
+			if quantity == 0 {
+				return mcp.NewToolResultText(fmt.Sprintf("Product %d removed from basket.", productID)), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Product %d quantity set to %d in basket.", productID, quantity)), nil
 		}
 
 		if err := c.UpdateOrderItem(ctx, productID, quantity); err != nil {
@@ -785,7 +831,14 @@ func registerRemoveFromCart(s *server.MCPServer, deps Deps) {
 
 		// GetOrder must be called first to cache the active order ID for the header.
 		if _, err := c.GetOrder(ctx); err != nil {
-			return errResult(fmt.Sprintf("Failed to get active order: %v", err)), nil
+			if !isNoActiveOrder(err) {
+				return errResult(fmt.Sprintf("Failed to get active order: %v", err)), nil
+			}
+			// No online order — remove from the GraphQL app basket instead.
+			if err := updateBasketQL(ctx, c, map[int]int{productID: 0}); err != nil {
+				return errResult(fmt.Sprintf("Failed to remove product %d from basket: %v", productID, err)), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Product %d removed from basket.", productID)), nil
 		}
 
 		if err := c.RemoveFromOrder(ctx, productID); err != nil {
@@ -825,7 +878,25 @@ func registerClearCart(s *server.MCPServer, deps Deps) {
 		}
 
 		if err := c.ClearOrder(ctx); err != nil {
-			return errResult(fmt.Sprintf("Failed to clear cart: %v", err)), nil
+			if !isNoActiveOrder(err) {
+				return errResult(fmt.Sprintf("Failed to clear cart: %v", err)), nil
+			}
+			// No online order — clear the GraphQL app basket instead.
+			basket, bErr := fetchBasketQL(ctx, c)
+			if bErr != nil {
+				return errResult(fmt.Sprintf("Failed to clear basket: %v", bErr)), nil
+			}
+			if len(basket.Basket.Items) == 0 {
+				return mcp.NewToolResultText("Basket is already empty."), nil
+			}
+			removals := make(map[int]int, len(basket.Basket.Items))
+			for _, it := range basket.Basket.Items {
+				removals[it.ID] = 0
+			}
+			if err := updateBasketQL(ctx, c, removals); err != nil {
+				return errResult(fmt.Sprintf("Failed to clear basket: %v", err)), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Basket cleared (%d items removed).", len(removals))), nil
 		}
 		return mcp.NewToolResultText("Shopping cart cleared."), nil
 	})
