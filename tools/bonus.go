@@ -580,18 +580,16 @@ func registerActivatePersonalBonus(s *server.MCPServer, deps Deps) {
 }
 
 // activateOffer performs the activation PATCH for a single personal offer.
+// The API expects segmentId and startDate as query parameters, not as a JSON
+// body ("Required request parameter 'segmentId' ... is not present").
 func activateOffer(ctx context.Context, c *appie.Client, offerID, segmentID, startDate string) error {
-	body := map[string]any{"startDate": startDate}
+	params := url.Values{}
+	params.Set("startDate", startDate)
 	if segmentID != "" {
-		// The API uses numeric segment ids; send a number when possible.
-		if n, err := strconv.Atoi(segmentID); err == nil {
-			body["segmentId"] = n
-		} else {
-			body["segmentId"] = segmentID
-		}
+		params.Set("segmentId", segmentID)
 	}
-	path := "/mobile-services/bonuspage/v1/activate/" + url.PathEscape(offerID)
-	return c.DoRequest(ctx, http.MethodPatch, path, body, nil)
+	path := "/mobile-services/bonuspage/v1/activate/" + url.PathEscape(offerID) + "?" + params.Encode()
+	return c.DoRequest(ctx, http.MethodPatch, path, nil, nil)
 }
 
 // --- ah_get_upcoming_bonus_offers ---
