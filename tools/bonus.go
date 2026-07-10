@@ -51,13 +51,14 @@ type bonusSectionResp struct {
 }
 
 type sectionProductResp struct {
-	WebshopID        int             `json:"webshopId"`
-	Title            string          `json:"title"`
-	CurrentPrice     float64         `json:"currentPrice"`
-	PriceBeforeBonus float64         `json:"priceBeforeBonus"`
-	BonusMechanism   string          `json:"bonusMechanism"`
-	SalesUnitSize    string          `json:"salesUnitSize"`
-	DiscountLabels   []discountLabel `json:"discountLabels"`
+	WebshopID            int             `json:"webshopId"`
+	Title                string          `json:"title"`
+	CurrentPrice         float64         `json:"currentPrice"`
+	PriceBeforeBonus     float64         `json:"priceBeforeBonus"`
+	BonusMechanism       string          `json:"bonusMechanism"`
+	SalesUnitSize        string          `json:"salesUnitSize"`
+	UnitPriceDescription string          `json:"unitPriceDescription"`
+	DiscountLabels       []discountLabel `json:"discountLabels"`
 	// Personal (choose-and-activate) offers carry activation metadata.
 	OfferID          json.Number `json:"offerId"`
 	ActivationStatus string      `json:"activationStatus"`
@@ -106,6 +107,8 @@ type bonusOfferItem struct {
 	ID                 int     `json:"id,omitempty"`
 	BonusSegmentID     string  `json:"bonus_segment_id,omitempty"`
 	Title              string  `json:"title"`
+	Unit               string  `json:"unit,omitempty"`
+	UnitPrice          string  `json:"unit_price,omitempty"`
 	OriginalPrice      float64 `json:"original_price,omitempty"`
 	BonusPrice         float64 `json:"bonus_price"`
 	DiscountPercentage float64 `json:"discount_percentage,omitempty"`
@@ -284,6 +287,8 @@ func (p *sectionProductResp) toOffer() bonusOfferItem {
 	it := bonusOfferItem{
 		ID:               p.WebshopID,
 		Title:            p.Title,
+		Unit:             p.SalesUnitSize,
+		UnitPrice:        p.UnitPriceDescription,
 		OriginalPrice:    p.PriceBeforeBonus,
 		BonusPrice:       p.CurrentPrice,
 		BonusMechanism:   p.BonusMechanism,
@@ -842,7 +847,11 @@ func registerGetPersonalBonusOffers(s *server.MCPServer, deps Deps) {
 				"member-specific deals on top of the regular weekly bonus. "+
 				"Use this when the user asks about their personal offers or bonus box. "+
 				"Requires login. Each offer returns original_price, bonus_price, discount_percentage, "+
-				"koopzegel_discount and price_after_koopzegels (6.12% koopzegel value), same as ah_get_bonus_offers.",
+				"koopzegel_discount and price_after_koopzegels (6.12% koopzegel value), plus unit and "+
+				"unit_price, same as ah_get_bonus_offers. "+
+				"PRESENT the results to the user as a markdown table, one row per offer, with columns "+
+				"# | Product | Inhoud | Van | Voor | Korting % | Na koopzegels | Deal | Status — so offers are easy to compare "+
+				"(keep the number column so the user can activate with ah_activate_personal_bonus).",
 		),
 		mcp.WithString("limit",
 			mcp.Description("Maximum number of offers to return (default 20)"),

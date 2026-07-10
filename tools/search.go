@@ -22,15 +22,16 @@ type searchResponse struct {
 }
 
 type searchProduct struct {
-	WebshopID        int             `json:"webshopId"`
-	Title            string          `json:"title"`
-	SalesUnitSize    string          `json:"salesUnitSize"`
-	CurrentPrice     float64         `json:"currentPrice"`
-	PriceBeforeBonus float64         `json:"priceBeforeBonus"`
-	IsBonus          bool            `json:"isBonus"`
-	BonusMechanism   string          `json:"bonusMechanism"`
-	DiscountLabels   []discountLabel `json:"discountLabels"`
-	Images           []struct {
+	WebshopID            int             `json:"webshopId"`
+	Title                string          `json:"title"`
+	SalesUnitSize        string          `json:"salesUnitSize"`
+	UnitPriceDescription string          `json:"unitPriceDescription"`
+	CurrentPrice         float64         `json:"currentPrice"`
+	PriceBeforeBonus     float64         `json:"priceBeforeBonus"`
+	IsBonus              bool            `json:"isBonus"`
+	BonusMechanism       string          `json:"bonusMechanism"`
+	DiscountLabels       []discountLabel `json:"discountLabels"`
+	Images               []struct {
 		URL string `json:"url"`
 	} `json:"images"`
 }
@@ -41,6 +42,8 @@ type searchProduct struct {
 type searchItem struct {
 	ID                   int         `json:"id"`
 	Title                string      `json:"title"`
+	Unit                 string      `json:"unit,omitempty"`
+	UnitPrice            string      `json:"unit_price,omitempty"`
 	Price                float64     `json:"price"`
 	BonusPrice           float64     `json:"bonus_price,omitempty"`
 	BonusMechanism       string      `json:"bonus_mechanism,omitempty"`
@@ -48,13 +51,12 @@ type searchItem struct {
 	KoopzegelDiscount    float64     `json:"koopzegel_discount,omitempty"`
 	PriceAfterKoopzegels float64     `json:"price_after_koopzegels,omitempty"`
 	Tiers                []priceTier `json:"tiers,omitempty"`
-	Unit                 string      `json:"unit,omitempty"`
 	IsBonus              bool        `json:"is_bonus"`
 	ImageURL             string      `json:"image_url,omitempty"`
 }
 
 func (p *searchProduct) toItem() searchItem {
-	it := searchItem{ID: p.WebshopID, Title: p.Title, Unit: p.SalesUnitSize, IsBonus: p.IsBonus}
+	it := searchItem{ID: p.WebshopID, Title: p.Title, Unit: p.SalesUnitSize, UnitPrice: p.UnitPriceDescription, IsBonus: p.IsBonus}
 	if len(p.Images) > 0 {
 		it.ImageURL = p.Images[0].URL
 	}
