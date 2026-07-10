@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -209,7 +207,9 @@ func registerGetBonusOffers(s *server.MCPServer, deps Deps) {
 				"Supports optional keyword filter to find e.g. cheese on bonus: set query='kaas'. "+
 				"Group deals (e.g. '2+1 gratis', 'Alle yoghurt 25% korting') have id=0 and a non-empty bonus_segment_id — "+
 				"pass that to ah_get_bonus_group_products to see the individual products in the group. "+
-				"Returns id, bonus_segment_id, title, original_price, bonus_price, discount_percentage, bonus_mechanism.",
+				"Each offer returns original_price, bonus_price, discount_percentage, bonus_mechanism, plus "+
+				"koopzegel_discount and price_after_koopzegels (6.12% koopzegel value on the bonus price). "+
+				"Tiered/stapel deals ('1 stuk 30% / 2 stuks 50%') include a tiers array with the price per step.",
 		),
 		mcp.WithString("limit",
 			mcp.Description("Maximum number of results to return (default 20)"),
@@ -231,52 +231,24 @@ func registerGetBonusOffers(s *server.MCPServer, deps Deps) {
 		}
 
 		limit := req.GetInt("limit", 20)
-		query := strings.ToLower(req.GetString("query", ""))
+		query := req.GetString("query", "")
 
-		// GetBonusProducts fetches all categories and fails if any one errors.
-		// Fall back to spotlight (featured deals) on error so the tool always
-		// returns something useful.
-		products, err := c.GetBonusProducts(ctx)
+		// Fetch the current period's NATIONAL + SPOTLIGHT offers via the shared
+		// section parser, which resolves tiered/stapel prices (bonus_price and
+		// per-step tiers) that the plain product endpoint drops.
+		meta, err := fetchBonusMetadata(ctx, c)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[Albert Heijn MCP] GetBonusProducts failed (%v), falling back to spotlight\n", err)
-			products, err = c.GetSpotlightBonusProducts(ctx)
-			if err != nil {
-				return errResult(fmt.Sprintf("Failed to get bonus products: %v", err)), nil
-			}
+			return errResult(fmt.Sprintf("Failed to get bonus metadata: %v", err)), nil
 		}
-
-		type item struct {
-			ID                 int     `json:"id,omitempty"`
-			BonusSegmentID     string  `json:"bonus_segment_id,omitempty"`
-			Title              string  `json:"title"`
-			OriginalPrice      float64 `json:"original_price,omitempty"`
-			BonusPrice         float64 `json:"bonus_price"`
-			DiscountPercentage float64 `json:"discount_percentage,omitempty"`
-			BonusMechanism     string  `json:"bonus_mechanism,omitempty"`
+		current, _ := selectPeriods(meta, time.Now().Format("2006-01-02"))
+		if current == nil {
+			return errResult("No active bonus period."), nil
 		}
-		results := make([]item, 0)
-		for _, p := range products {
-			if len(results) >= limit {
-				break
-			}
-			// Client-side keyword filter when query is set.
-			if query != "" && !strings.Contains(strings.ToLower(p.Title), query) {
-				continue
-			}
-			it := item{
-				ID:             p.ID,
-				BonusSegmentID: p.BonusSegmentID,
-				Title:          p.Title,
-				OriginalPrice:  p.Price.Was,
-				BonusPrice:     p.Price.Now,
-				BonusMechanism: p.BonusMechanism,
-			}
-			if p.Price.Was > 0 && p.Price.Now > 0 {
-				it.DiscountPercentage = (1 - p.Price.Now/p.Price.Was) * 100
-			}
-			results = append(results, it)
+		offers, err := collectTabOffers(ctx, c, current, "NATIONAL", "SPOTLIGHT")
+		if err != nil {
+			return errResult(fmt.Sprintf("Failed to get bonus offers: %v", err)), nil
 		}
-		return jsonResult(results)
+		return jsonResult(filterOffers(offers, query, limit))
 	})
 }
 

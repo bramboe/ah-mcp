@@ -240,7 +240,7 @@ Tokens are stored automatically at `/home/ah-mcp/.config/ah-mcp/tokens.json` —
 | `ah_search_products` | Search products by keyword (Dutch terms preferred). |
 | `ah_search_products_filtered` | Search with optional `bonus=true` filter for on-sale items only. |
 | `ah_get_product` | Full detail for one product by ID. Add `include_nutritional_info=true` for calories, fat, protein, etc. |
-| `ah_get_bonus_offers` | All current bonus/promotional offers. Optional keyword filter. |
+| `ah_get_bonus_offers` | All current bonus/promotional offers with `original_price`, `bonus_price`, `discount_percentage`, and `koopzegel_discount` + `price_after_koopzegels` (6.12% koopzegel value). Tiered/stapel deals (e.g. "1 stuk 30% / 2 stuks 50%") include a `tiers` array with the price per step. Optional keyword filter. |
 | `ah_get_bonus_group_products` | All products in a specific bonus deal group (e.g. "2+1 gratis"). Use `segment_id` from `ah_get_bonus_offers`. |
 | `ah_get_upcoming_bonus_offers` | NEXT week's bonus offers, before they start. AH publishes them a few days ahead (typically from Friday); before that the tool reports from which date they become visible. |
 | `ah_get_bonus_for_frequent_items` | Which of your frequently ordered products are on bonus this week (`period=current`) or next week (`period=next`). Includes personal Kies & Activeer offers (marked `personal=true`). |
