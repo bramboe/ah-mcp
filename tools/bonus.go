@@ -135,6 +135,72 @@ const koopzegelRate = 0.0612
 func round2(v float64) float64 { return math.Round(v*100) / 100 }
 func round1(v float64) float64 { return math.Round(v*10) / 10 }
 
+// euro formats an amount as €X,XX (Dutch comma), empty for zero.
+func euro(v float64) string {
+	if v <= 0 {
+		return "—"
+	}
+	return "€" + strings.Replace(fmt.Sprintf("%.2f", v), ".", ",", 1)
+}
+
+// perKg extracts the "€X" amount from AH's unit_price description
+// ("normale prijs per kg €14.26") and returns it as "€14,26/kg".
+func perKg(desc string) string {
+	if desc == "" {
+		return ""
+	}
+	idx := strings.LastIndex(desc, "€")
+	if idx < 0 {
+		return ""
+	}
+	amount := strings.TrimSpace(desc[idx:])
+	unit := "kg"
+	if strings.Contains(desc, "per l") || strings.Contains(desc, "per liter") {
+		unit = "l"
+	}
+	return strings.Replace(amount, ".", ",", 1) + "/" + unit
+}
+
+// cell sanitises a value for a markdown table cell.
+func cell(s string) string {
+	if s == "" {
+		return "—"
+	}
+	return strings.ReplaceAll(s, "|", "/")
+}
+
+// renderOffersTable renders offers as a markdown table. When numbered, the
+// first column is the offer number and a Status column is appended (used by
+// the personal bonus so the user can activate by number).
+func renderOffersTable(offers []bonusOfferItem, numbered bool) string {
+	var b strings.Builder
+	if numbered {
+		b.WriteString("| # | Product | Inhoud | Van | Voor | Korting | Na zegels | Normaal | Deal | Status |\n")
+		b.WriteString("|--:|---|---|--:|--:|--:|--:|---|---|---|\n")
+	} else {
+		b.WriteString("| Product | Inhoud | Van | Voor | Korting | Na zegels | Normaal | Deal |\n")
+		b.WriteString("|---|---|--:|--:|--:|--:|---|---|\n")
+	}
+	for _, o := range offers {
+		korting := "—"
+		if o.DiscountPercentage > 0 {
+			korting = fmt.Sprintf("%.0f%%", o.DiscountPercentage)
+		}
+		van := euro(o.OriginalPrice)
+		voor := euro(o.BonusPrice)
+		na := euro(o.PriceAfterKoopzegels)
+		normaal := cell(perKg(o.UnitPrice))
+		if numbered {
+			fmt.Fprintf(&b, "| %d | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
+				o.Number, cell(o.Title), cell(o.Unit), van, voor, korting, na, normaal, cell(o.BonusMechanism), cell(o.ActivationStatus))
+		} else {
+			fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s | %s | %s |\n",
+				cell(o.Title), cell(o.Unit), van, voor, korting, na, normaal, cell(o.BonusMechanism))
+		}
+	}
+	return b.String()
+}
+
 // computeTiers turns AH discount labels into effective price tiers. base is the
 // regular price (priceBeforeBonus / exampleFromPrice); it is required for
 // percentage- and free-item deals but not for fixed/x-for-y deals.
@@ -847,11 +913,10 @@ func registerGetPersonalBonusOffers(s *server.MCPServer, deps Deps) {
 				"member-specific deals on top of the regular weekly bonus. "+
 				"Use this when the user asks about their personal offers or bonus box. "+
 				"Requires login. Each offer returns original_price, bonus_price, discount_percentage, "+
-				"koopzegel_discount and price_after_koopzegels (6.12% koopzegel value), plus unit and "+
-				"unit_price, same as ah_get_bonus_offers. "+
-				"PRESENT the results to the user as a markdown table, one row per offer, with columns "+
-				"# | Product | Inhoud | Van | Voor | Korting % | Na koopzegels | Deal | Status — so offers are easy to compare "+
-				"(keep the number column so the user can activate with ah_activate_personal_bonus).",
+				"koopzegel_discount and price_after_koopzegels (6.12% koopzegel value), plus unit and unit_price. "+
+				"By default this tool RETURNS A READY MARKDOWN TABLE with a # column (# | Product | Inhoud | Van | "+
+				"Voor | Korting | Na zegels | Normaal | Deal | Status) — show it to the user as-is; the user can then "+
+				"activate an offer with ah_activate_personal_bonus by its number. Pass format='json' for structured data.",
 		),
 		mcp.WithString("limit",
 			mcp.Description("Maximum number of offers to return (default 20)"),
@@ -861,6 +926,9 @@ func registerGetPersonalBonusOffers(s *server.MCPServer, deps Deps) {
 		),
 		mcp.WithString("include_raw",
 			mcp.Description("Set to 'true' to return the raw choose-and-activate API payload (debugging)"),
+		),
+		mcp.WithString("format",
+			mcp.Description("'table' (default) returns a ready markdown table to show the user as-is; 'json' returns structured data"),
 		),
 	)
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -892,13 +960,22 @@ func registerGetPersonalBonusOffers(s *server.MCPServer, deps Deps) {
 			return mcp.NewToolResultText(out), nil
 		}
 
+		asJSON := req.GetString("format", "table") == "json"
+		render := func(offers []bonusOfferItem) (*mcp.CallToolResult, error) {
+			shown := filterOffers(offers, query, limit)
+			if asJSON {
+				return jsonResult(shown)
+			}
+			return mcp.NewToolResultText(renderOffersTable(shown, true)), nil
+		}
+
 		cacheKey := "bonus:personal"
 		if cached, ok := GlobalCache.Get(cacheKey); ok {
 			var offers []bonusOfferItem
 			if err := unmarshalCached(cached, &offers); err == nil {
 				offers = numberAndSnapshot(offers)
 				LogInfo("ah_get_personal_bonus_offers", "cache_hit duration=%v", time.Since(start))
-				return jsonResult(filterOffers(offers, query, limit))
+				return render(offers)
 			}
 		}
 
@@ -917,7 +994,7 @@ func registerGetPersonalBonusOffers(s *server.MCPServer, deps Deps) {
 		cacheOffers(cacheKey, offers)
 
 		LogInfo("ah_get_personal_bonus_offers", "offers=%d duration=%v", len(offers), time.Since(start))
-		return jsonResult(filterOffers(offers, query, limit))
+		return render(offers)
 	})
 }
 

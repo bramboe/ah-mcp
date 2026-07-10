@@ -182,16 +182,19 @@ func registerGetBonusOffers(s *server.MCPServer, deps Deps) {
 				"Each offer returns original_price, bonus_price, discount_percentage, bonus_mechanism, plus "+
 				"koopzegel_discount and price_after_koopzegels (6.12% koopzegel value on the bonus price). "+
 				"Tiered/stapel deals ('1 stuk 30% / 2 stuks 50%') include a tiers array with the price per step. "+
-				"Also returns unit (pack size) and unit_price (normal price per kg/l). "+
-				"PRESENT the results to the user as a markdown table, one row per offer, with columns "+
-				"Product | Inhoud | Van | Voor | Korting % | Na koopzegels | Deal — so offers are easy to compare. "+
-				"Put the bonus_mechanism in the Deal column; for tiered deals show the best per-piece price in Voor.",
+				"By default this tool RETURNS A READY MARKDOWN TABLE (Product | Inhoud | Van | Voor | Korting | "+
+				"Na zegels | Normaal | Deal) — show it to the user as-is, do NOT reformat it into a bullet list. "+
+				"Pass format='json' for structured data (unit, unit_price, original_price, bonus_price, "+
+				"discount_percentage, bonus_mechanism, koopzegel_discount, price_after_koopzegels, tiers).",
 		),
 		mcp.WithString("limit",
 			mcp.Description("Maximum number of results to return (default 20)"),
 		),
 		mcp.WithString("query",
 			mcp.Description("Optional keyword filter (Dutch or English) applied client-side, e.g. 'kaas', 'vlees', 'bier'"),
+		),
+		mcp.WithString("format",
+			mcp.Description("'table' (default) returns a ready markdown table to show the user as-is; 'json' returns structured data"),
 		),
 	)
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -224,7 +227,11 @@ func registerGetBonusOffers(s *server.MCPServer, deps Deps) {
 		if err != nil {
 			return errResult(fmt.Sprintf("Failed to get bonus offers: %v", err)), nil
 		}
-		return jsonResult(filterOffers(offers, query, limit))
+		filtered := filterOffers(offers, query, limit)
+		if req.GetString("format", "table") == "json" {
+			return jsonResult(filtered)
+		}
+		return mcp.NewToolResultText(renderOffersTable(filtered, false)), nil
 	})
 }
 
