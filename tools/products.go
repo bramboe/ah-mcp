@@ -35,7 +35,9 @@ func registerSearchProducts(s *server.MCPServer, deps Deps) {
 				"AH is a Dutch supermarket so prefer Dutch search terms for best results: "+
 				"e.g. 'melk' (milk), 'kaas' (cheese), 'brood' (bread), 'kip' (chicken), 'appel' (apple). "+
 				"English terms also work but may return fewer results. "+
-				"Returns id, title, price, bonus_price, unit, is_bonus, image_url.",
+				"For bonus products the result includes bonus_mechanism, discount_percentage, "+
+				"koopzegel_discount, price_after_koopzegels and a tiers array (stapel deals), "+
+				"besides id, title, price, bonus_price, unit, is_bonus, image_url.",
 		),
 		mcp.WithString("query",
 			mcp.Required(),
@@ -70,47 +72,16 @@ func registerSearchProducts(s *server.MCPServer, deps Deps) {
 			return mcp.NewToolResultText(string(cached)), nil
 		}
 
-		var products []appie.Product
+		var results []searchItem
 		if err := withRetry(ctx, "ah_search_products", func() error {
 			var e error
-			products, e = c.SearchProducts(ctx, query, limit)
+			results, e = searchProductsEnriched(ctx, c, query, limit, false)
 			return e
 		}); err != nil {
 			LogError("ah_search_products", "search failed query=%q err=%v", query, err)
 			return errResult(fmt.Sprintf("Search failed: %v", err)), nil
 		}
 
-		type item struct {
-			ID         int     `json:"id"`
-			Title      string  `json:"title"`
-			Price      float64 `json:"price"`
-			BonusPrice float64 `json:"bonus_price,omitempty"`
-			Unit       string  `json:"unit,omitempty"`
-			IsBonus    bool    `json:"is_bonus"`
-			ImageURL   string  `json:"image_url,omitempty"`
-		}
-		results := make([]item, 0, len(products))
-		for _, p := range products {
-			it := item{
-				ID:      p.ID,
-				Title:   p.Title,
-				Price:   p.Price.Was,
-				IsBonus: p.IsBonus,
-				Unit:    p.UnitSize,
-			}
-			if p.IsBonus {
-				it.BonusPrice = p.Price.Now
-				if it.Price == 0 {
-					it.Price = p.Price.Now
-				}
-			} else {
-				it.Price = p.Price.Now
-			}
-			if len(p.Images) > 0 {
-				it.ImageURL = p.Images[0].URL
-			}
-			results = append(results, it)
-		}
 		data, err := json.MarshalIndent(results, "", "  ")
 		if err != nil {
 			return errResult(fmt.Sprintf("marshal result: %v", err)), nil
@@ -888,6 +859,8 @@ func registerSearchProductsFiltered(s *server.MCPServer, deps Deps) {
 		mcp.WithDescription(
 			"Search Albert Heijn products with optional bonus filter. "+
 				"Set bonus=true to return only products currently on promotion/sale. "+
+				"Bonus products include bonus_mechanism, discount_percentage, koopzegel_discount, "+
+				"price_after_koopzegels and a tiers array for stapel deals. "+
 				"Dutch search terms give best results: 'melk', 'kaas', 'vlees', etc.",
 		),
 		mcp.WithString("query",
@@ -920,40 +893,9 @@ func registerSearchProductsFiltered(s *server.MCPServer, deps Deps) {
 		limit := req.GetInt("limit", 10)
 		bonus := req.GetString("bonus", "") == "true"
 
-		products, err := c.SearchProductsFiltered(ctx, appie.SearchOptions{
-			Query: query,
-			Limit: limit,
-			Bonus: bonus,
-		})
+		results, err := searchProductsEnriched(ctx, c, query, limit, bonus)
 		if err != nil {
 			return errResult(fmt.Sprintf("Search failed: %v", err)), nil
-		}
-
-		type item struct {
-			ID         int     `json:"id"`
-			Title      string  `json:"title"`
-			Price      float64 `json:"price"`
-			BonusPrice float64 `json:"bonus_price,omitempty"`
-			Unit       string  `json:"unit,omitempty"`
-			IsBonus    bool    `json:"is_bonus"`
-			ImageURL   string  `json:"image_url,omitempty"`
-		}
-		results := make([]item, 0, len(products))
-		for _, p := range products {
-			it := item{ID: p.ID, Title: p.Title, IsBonus: p.IsBonus, Unit: p.UnitSize}
-			if p.IsBonus {
-				it.BonusPrice = p.Price.Now
-				it.Price = p.Price.Was
-				if it.Price == 0 {
-					it.Price = p.Price.Now
-				}
-			} else {
-				it.Price = p.Price.Now
-			}
-			if len(p.Images) > 0 {
-				it.ImageURL = p.Images[0].URL
-			}
-			results = append(results, it)
 		}
 		return jsonResult(results)
 	})
