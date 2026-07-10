@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"sort"
@@ -50,12 +51,13 @@ type bonusSectionResp struct {
 }
 
 type sectionProductResp struct {
-	WebshopID        int     `json:"webshopId"`
-	Title            string  `json:"title"`
-	CurrentPrice     float64 `json:"currentPrice"`
-	PriceBeforeBonus float64 `json:"priceBeforeBonus"`
-	BonusMechanism   string  `json:"bonusMechanism"`
-	SalesUnitSize    string  `json:"salesUnitSize"`
+	WebshopID        int             `json:"webshopId"`
+	Title            string          `json:"title"`
+	CurrentPrice     float64         `json:"currentPrice"`
+	PriceBeforeBonus float64         `json:"priceBeforeBonus"`
+	BonusMechanism   string          `json:"bonusMechanism"`
+	SalesUnitSize    string          `json:"salesUnitSize"`
+	DiscountLabels   []discountLabel `json:"discountLabels"`
 	// Personal (choose-and-activate) offers carry activation metadata.
 	OfferID          json.Number `json:"offerId"`
 	ActivationStatus string      `json:"activationStatus"`
@@ -68,10 +70,34 @@ type sectionGroupResp struct {
 	ExampleFromPrice    float64              `json:"exampleFromPrice"`
 	ExampleForPrice     float64              `json:"exampleForPrice"`
 	Products            []sectionProductResp `json:"products"`
+	DiscountLabels      []discountLabel      `json:"discountLabels"`
 	// Personal (choose-and-activate) offers carry activation metadata.
 	OfferID          json.Number `json:"offerId"`
 	SegmentID        json.Number `json:"segmentId"`
 	ActivationStatus string      `json:"activationStatus"`
+}
+
+// discountLabel is one promotion tier from the AH bonuspage. AH uses several
+// codes; each maps to an effective price differently (see computeTiers).
+type discountLabel struct {
+	Code               string  `json:"code"`
+	DefaultDescription string  `json:"defaultDescription"`
+	Count              int     `json:"count"`
+	FreeCount          int     `json:"freeCount"`
+	Percentage         float64 `json:"percentage"`
+	Price              float64 `json:"price"`
+	Unit               string  `json:"unit"`
+}
+
+// priceTier is a computed, human-facing price step of a (possibly tiered)
+// bonus offer, e.g. "1 stuk 30% → €3.49" and "2 stuks 50% → €2.50 p.st.".
+type priceTier struct {
+	Description        string  `json:"description"`
+	Count              int     `json:"count,omitempty"`
+	DiscountPercentage float64 `json:"discount_percentage,omitempty"`
+	PricePerPiece      float64 `json:"price_per_piece,omitempty"`
+	TotalPrice         float64 `json:"total_price,omitempty"`
+	Unit               string  `json:"unit,omitempty"`
 }
 
 // bonusOfferItem is the JSON shape returned to the agent. It matches the
@@ -84,10 +110,105 @@ type bonusOfferItem struct {
 	BonusPrice         float64 `json:"bonus_price"`
 	DiscountPercentage float64 `json:"discount_percentage,omitempty"`
 	BonusMechanism     string  `json:"bonus_mechanism,omitempty"`
+	// Tiers holds the per-step effective prices for tiered/stapel deals
+	// (e.g. "1 stuk 30%", "2 stuks 50%"). Empty for simple single-price offers.
+	Tiers []priceTier `json:"tiers,omitempty"`
 	// Personal (choose-and-activate) offers only:
 	Number           int    `json:"number,omitempty"`
 	OfferID          string `json:"offer_id,omitempty"`
 	ActivationStatus string `json:"activation_status,omitempty"`
+}
+
+// round2 / round1 round to 2 / 1 decimals for money and percentages.
+func round2(v float64) float64 { return math.Round(v*100) / 100 }
+func round1(v float64) float64 { return math.Round(v*10) / 10 }
+
+// computeTiers turns AH discount labels into effective price tiers. base is the
+// regular price (priceBeforeBonus / exampleFromPrice); it is required for
+// percentage- and free-item deals but not for fixed/x-for-y deals.
+func computeTiers(base float64, labels []discountLabel) []priceTier {
+	tiers := make([]priceTier, 0, len(labels))
+	for _, l := range labels {
+		t := priceTier{Description: l.DefaultDescription, Count: l.Count}
+		switch l.Code {
+		case "DISCOUNT_TIERED_PERCENT", "DISCOUNT_PERCENTAGE":
+			if t.Count == 0 {
+				t.Count = 1
+			}
+			t.DiscountPercentage = l.Percentage
+			if base > 0 {
+				t.PricePerPiece = round2(base * (1 - l.Percentage/100))
+				t.TotalPrice = round2(t.PricePerPiece * float64(t.Count))
+			}
+		case "DISCOUNT_X_FOR_Y", "DISCOUNT_TIERED_PRICE":
+			// price is the total for `count` pieces (e.g. "2 stuks 2.49").
+			if l.Count > 0 && l.Price > 0 {
+				t.TotalPrice = round2(l.Price)
+				t.PricePerPiece = round2(l.Price / float64(l.Count))
+				if base > 0 {
+					t.DiscountPercentage = round1((1 - t.PricePerPiece/base) * 100)
+				}
+			}
+		case "DISCOUNT_FIXED_PRICE":
+			if t.Count == 0 {
+				t.Count = 1
+			}
+			t.PricePerPiece = round2(l.Price)
+			t.TotalPrice = round2(l.Price * float64(t.Count))
+			if base > 0 && l.Price > 0 {
+				t.DiscountPercentage = round1((1 - l.Price/base) * 100)
+			}
+		case "DISCOUNT_X_PLUS_Y_FREE":
+			pieces := l.Count + l.FreeCount
+			t.Count = pieces
+			if pieces > 0 {
+				// The discount fraction is structural (pay Count of pieces),
+				// so it is known even without a base price.
+				t.DiscountPercentage = round1((1 - float64(l.Count)/float64(pieces)) * 100)
+				if base > 0 {
+					t.TotalPrice = round2(base * float64(l.Count))
+					t.PricePerPiece = round2(t.TotalPrice / float64(pieces))
+				}
+			}
+		case "DISCOUNT_WEIGHT":
+			// Price per `count` units of `unit` (e.g. per 100 GRAM voor €2.69).
+			t.Unit = l.Unit
+			t.PricePerPiece = round2(l.Price)
+		}
+		tiers = append(tiers, t)
+	}
+	return tiers
+}
+
+// bestTierPrice returns the lowest positive per-piece price across weight-free
+// tiers — the effective "from" bonus price to headline. Returns 0 if none.
+func bestTierPrice(tiers []priceTier) float64 {
+	best := 0.0
+	for _, t := range tiers {
+		if t.Unit != "" || t.PricePerPiece <= 0 {
+			continue
+		}
+		if best == 0 || t.PricePerPiece < best {
+			best = t.PricePerPiece
+		}
+	}
+	return best
+}
+
+// applyPricing fills Tiers and guarantees BonusPrice/DiscountPercentage are set
+// to the effective bonus price, even for tiered deals that carry no single
+// currentPrice. base is the regular (pre-bonus) price.
+func (it *bonusOfferItem) applyPricing(base float64, labels []discountLabel) {
+	it.Tiers = computeTiers(base, labels)
+	if it.BonusPrice == 0 {
+		it.BonusPrice = bestTierPrice(it.Tiers)
+	}
+	if it.BonusPrice == 0 && base > 0 {
+		it.BonusPrice = base // no usable discount data: at least show the price
+	}
+	if it.OriginalPrice > 0 && it.BonusPrice > 0 && it.BonusPrice < it.OriginalPrice {
+		it.DiscountPercentage = round1((1 - it.BonusPrice/it.OriginalPrice) * 100)
+	}
 }
 
 // personalSnapshot holds the most recent full numbered personal offer list so
@@ -158,9 +279,7 @@ func (p *sectionProductResp) toOffer() bonusOfferItem {
 	if it.OfferID == "" || it.OfferID == "0" {
 		it.OfferID = ""
 	}
-	if it.OriginalPrice > 0 && it.BonusPrice > 0 {
-		it.DiscountPercentage = (1 - it.BonusPrice/it.OriginalPrice) * 100
-	}
+	it.applyPricing(p.PriceBeforeBonus, p.DiscountLabels)
 	return it
 }
 
@@ -183,9 +302,7 @@ func (g *sectionGroupResp) toOffer() bonusOfferItem {
 	if it.OfferID == "" || it.OfferID == "0" {
 		it.OfferID = ""
 	}
-	if it.OriginalPrice > 0 && it.BonusPrice > 0 {
-		it.DiscountPercentage = (1 - it.BonusPrice/it.OriginalPrice) * 100
-	}
+	it.applyPricing(g.ExampleFromPrice, g.DiscountLabels)
 	return it
 }
 
