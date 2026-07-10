@@ -36,8 +36,9 @@ func registerSearchProducts(s *server.MCPServer, deps Deps) {
 				"e.g. 'melk' (milk), 'kaas' (cheese), 'brood' (bread), 'kip' (chicken), 'appel' (apple). "+
 				"English terms also work but may return fewer results. "+
 				"For bonus products the result includes bonus_mechanism, discount_percentage, "+
-				"koopzegel_discount, price_after_koopzegels and a tiers array (stapel deals), "+
-				"besides id, title, price, bonus_price, unit, is_bonus, image_url.",
+				"koopzegel_discount, price_after_koopzegels, a tiers array (stapel deals) and unit_price "+
+				"(normal price per kg/l), besides id, title, price, bonus_price, unit, is_bonus, image_url. "+
+				"When several results are on bonus, present them as a markdown table so the user can compare deals.",
 		),
 		mcp.WithString("query",
 			mcp.Required(),
@@ -180,7 +181,11 @@ func registerGetBonusOffers(s *server.MCPServer, deps Deps) {
 				"pass that to ah_get_bonus_group_products to see the individual products in the group. "+
 				"Each offer returns original_price, bonus_price, discount_percentage, bonus_mechanism, plus "+
 				"koopzegel_discount and price_after_koopzegels (6.12% koopzegel value on the bonus price). "+
-				"Tiered/stapel deals ('1 stuk 30% / 2 stuks 50%') include a tiers array with the price per step.",
+				"Tiered/stapel deals ('1 stuk 30% / 2 stuks 50%') include a tiers array with the price per step. "+
+				"Also returns unit (pack size) and unit_price (normal price per kg/l). "+
+				"PRESENT the results to the user as a markdown table, one row per offer, with columns "+
+				"Product | Inhoud | Van | Voor | Korting % | Na koopzegels | Deal — so offers are easy to compare. "+
+				"Put the bonus_mechanism in the Deal column; for tiered deals show the best per-piece price in Voor.",
 		),
 		mcp.WithString("limit",
 			mcp.Description("Maximum number of results to return (default 20)"),
