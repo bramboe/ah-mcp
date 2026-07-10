@@ -110,6 +110,11 @@ type bonusOfferItem struct {
 	BonusPrice         float64 `json:"bonus_price"`
 	DiscountPercentage float64 `json:"discount_percentage,omitempty"`
 	BonusMechanism     string  `json:"bonus_mechanism,omitempty"`
+	// Koopzegel (savings-stamp) value on top of the bonus: a full AH card
+	// returns 6.12%. koopzegel_discount is that value on the bonus price;
+	// price_after_koopzegels is the effective price once redeemed.
+	KoopzegelDiscount    float64 `json:"koopzegel_discount,omitempty"`
+	PriceAfterKoopzegels float64 `json:"price_after_koopzegels,omitempty"`
 	// Tiers holds the per-step effective prices for tiered/stapel deals
 	// (e.g. "1 stuk 30%", "2 stuks 50%"). Empty for simple single-price offers.
 	Tiers []priceTier `json:"tiers,omitempty"`
@@ -118,6 +123,10 @@ type bonusOfferItem struct {
 	OfferID          string `json:"offer_id,omitempty"`
 	ActivationStatus string `json:"activation_status,omitempty"`
 }
+
+// koopzegelRate is the effective return on AH koopzegels (savings stamps):
+// a full digital card costs €49 and pays out €52 → 6.12% (AH, 2026).
+const koopzegelRate = 0.0612
 
 // round2 / round1 round to 2 / 1 decimals for money and percentages.
 func round2(v float64) float64 { return math.Round(v*100) / 100 }
@@ -208,6 +217,11 @@ func (it *bonusOfferItem) applyPricing(base float64, labels []discountLabel) {
 	}
 	if it.OriginalPrice > 0 && it.BonusPrice > 0 && it.BonusPrice < it.OriginalPrice {
 		it.DiscountPercentage = round1((1 - it.BonusPrice/it.OriginalPrice) * 100)
+	}
+	// Koopzegel value on the price actually paid (the bonus price).
+	if it.BonusPrice > 0 {
+		it.KoopzegelDiscount = round2(it.BonusPrice * koopzegelRate)
+		it.PriceAfterKoopzegels = round2(it.BonusPrice - it.KoopzegelDiscount)
 	}
 }
 
@@ -827,7 +841,8 @@ func registerGetPersonalBonusOffers(s *server.MCPServer, deps Deps) {
 			"Get the logged-in member's PERSONAL Albert Heijn bonus offers ('persoonlijke bonus' / bonus box): "+
 				"member-specific deals on top of the regular weekly bonus. "+
 				"Use this when the user asks about their personal offers or bonus box. "+
-				"Requires login. Returns the same fields as ah_get_bonus_offers.",
+				"Requires login. Each offer returns original_price, bonus_price, discount_percentage, "+
+				"koopzegel_discount and price_after_koopzegels (6.12% koopzegel value), same as ah_get_bonus_offers.",
 		),
 		mcp.WithString("limit",
 			mcp.Description("Maximum number of offers to return (default 20)"),

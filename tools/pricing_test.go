@@ -23,6 +23,27 @@ func TestComputeTiersCherries(t *testing.T) {
 	}
 }
 
+func TestApplyPricingKoopzegel(t *testing.T) {
+	// Cherries: bonus price 2.50 → koopzegel 6.12% = 0.15 → after 2.35.
+	it := bonusOfferItem{OriginalPrice: 4.99}
+	labels := []discountLabel{
+		{Code: "DISCOUNT_TIERED_PERCENT", DefaultDescription: "2 stuks 50%", Count: 2, Percentage: 50},
+	}
+	it.applyPricing(4.99, labels)
+	if it.BonusPrice != 2.50 {
+		t.Fatalf("bonus_price = %v, want 2.50", it.BonusPrice)
+	}
+	if it.KoopzegelDiscount != 0.15 {
+		t.Errorf("koopzegel_discount = %v, want 0.15", it.KoopzegelDiscount)
+	}
+	if it.PriceAfterKoopzegels != 2.35 {
+		t.Errorf("price_after_koopzegels = %v, want 2.35", it.PriceAfterKoopzegels)
+	}
+	if it.DiscountPercentage != 49.9 && it.DiscountPercentage != 50 {
+		t.Errorf("discount_percentage = %v, want ~50", it.DiscountPercentage)
+	}
+}
+
 func TestComputeTiersOtherTypes(t *testing.T) {
 	// 2 voor 4.99 (X_FOR_Y) — no base needed.
 	x := computeTiers(0, []discountLabel{{Code: "DISCOUNT_X_FOR_Y", Count: 2, Price: 4.99}})

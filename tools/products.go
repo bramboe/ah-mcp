@@ -207,7 +207,9 @@ func registerGetBonusOffers(s *server.MCPServer, deps Deps) {
 				"Supports optional keyword filter to find e.g. cheese on bonus: set query='kaas'. "+
 				"Group deals (e.g. '2+1 gratis', 'Alle yoghurt 25% korting') have id=0 and a non-empty bonus_segment_id — "+
 				"pass that to ah_get_bonus_group_products to see the individual products in the group. "+
-				"Returns id, bonus_segment_id, title, original_price, bonus_price, discount_percentage, bonus_mechanism.",
+				"Each offer returns original_price, bonus_price, discount_percentage, bonus_mechanism, plus "+
+				"koopzegel_discount and price_after_koopzegels (6.12% koopzegel value on the bonus price). "+
+				"Tiered/stapel deals ('1 stuk 30% / 2 stuks 50%') include a tiers array with the price per step.",
 		),
 		mcp.WithString("limit",
 			mcp.Description("Maximum number of results to return (default 20)"),
