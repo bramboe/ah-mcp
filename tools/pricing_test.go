@@ -69,3 +69,26 @@ func TestComputeTiersOtherTypes(t *testing.T) {
 		t.Errorf("percentage: got %+v", p[0])
 	}
 }
+
+func TestSearchProductToItem(t *testing.T) {
+	// Bonus product with a tiered deal → full price picture.
+	bonus := searchProduct{
+		WebshopID: 1, Title: "Kersen", SalesUnitSize: "350 g", IsBonus: true,
+		PriceBeforeBonus: 4.99, BonusMechanism: "2 Stapelen tot 50%",
+		DiscountLabels: []discountLabel{{Code: "DISCOUNT_TIERED_PERCENT", Count: 2, Percentage: 50, DefaultDescription: "2 stuks 50%"}},
+	}
+	it := bonus.toItem()
+	if it.Price != 4.99 || it.BonusPrice != 2.50 || it.KoopzegelDiscount != 0.15 || len(it.Tiers) != 1 {
+		t.Errorf("bonus item mapping wrong: %+v", it)
+	}
+	if it.BonusMechanism == "" {
+		t.Error("bonus_mechanism should be set")
+	}
+
+	// Non-bonus product → just the price, no bonus fields.
+	plain := searchProduct{WebshopID: 2, Title: "Melk", CurrentPrice: 1.19}
+	pit := plain.toItem()
+	if pit.Price != 1.19 || pit.BonusPrice != 0 || pit.IsBonus || len(pit.Tiers) != 0 {
+		t.Errorf("plain item mapping wrong: %+v", pit)
+	}
+}
