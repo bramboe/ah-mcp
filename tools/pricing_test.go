@@ -92,3 +92,24 @@ func TestSearchProductToItem(t *testing.T) {
 		t.Errorf("plain item mapping wrong: %+v", pit)
 	}
 }
+
+func TestAlwaysDiscountPercent(t *testing.T) {
+	// 1+1 gratis group (no base) → 50% surfaced even without a price.
+	var o1 bonusOfferItem
+	o1.applyPricing(0, []discountLabel{{Code: "DISCOUNT_X_PLUS_Y_FREE", Count: 1, FreeCount: 1, DefaultDescription: "1+1 gratis"}})
+	if o1.DiscountPercentage != 50 {
+		t.Errorf("1+1 gratis: discount=%v, want 50", o1.DiscountPercentage)
+	}
+	// 2e halve prijs → 25%.
+	var o2 bonusOfferItem
+	o2.applyPricing(0, []discountLabel{{Code: "DISCOUNT_ONE_HALF_PRICE", Count: 2, DefaultDescription: "2e halve prijs"}})
+	if o2.DiscountPercentage != 25 {
+		t.Errorf("2e halve prijs: discount=%v, want 25", o2.DiscountPercentage)
+	}
+	// With a base, per-piece is computed too.
+	var o3 bonusOfferItem
+	o3.applyPricing(2.00, []discountLabel{{Code: "DISCOUNT_ONE_HALF_PRICE", Count: 2}})
+	if o3.Tiers[0].PricePerPiece != 1.50 {
+		t.Errorf("2e halve prijs @2.00: per-piece=%v, want 1.50", o3.Tiers[0].PricePerPiece)
+	}
+}

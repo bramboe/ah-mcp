@@ -111,6 +111,7 @@ type bonusOfferItem struct {
 	UnitPrice          string  `json:"unit_price,omitempty"`
 	OriginalPrice      float64 `json:"original_price,omitempty"`
 	BonusPrice         float64 `json:"bonus_price"`
+	PriceFrom          bool    `json:"price_from,omitempty"`
 	DiscountPercentage float64 `json:"discount_percentage,omitempty"`
 	BonusMechanism     string  `json:"bonus_mechanism,omitempty"`
 	// Koopzegel (savings-stamp) value on top of the bonus: a full AH card
@@ -188,6 +189,9 @@ func renderOffersTable(offers []bonusOfferItem, numbered bool) string {
 		}
 		van := euro(o.OriginalPrice)
 		voor := euro(o.BonusPrice)
+		if o.PriceFrom && o.BonusPrice > 0 {
+			voor = "vanaf " + voor
+		}
 		na := euro(o.PriceAfterKoopzegels)
 		normaal := cell(perKg(o.UnitPrice))
 		if numbered {
@@ -248,6 +252,17 @@ func computeTiers(base float64, labels []discountLabel) []priceTier {
 					t.PricePerPiece = round2(t.TotalPrice / float64(pieces))
 				}
 			}
+		case "DISCOUNT_ONE_HALF_PRICE":
+			// "2e halve prijs": on Count items, one half is free — structural
+			// saving of 0.5 unit spread over Count (25% for the usual count=2).
+			if t.Count == 0 {
+				t.Count = 2
+			}
+			t.DiscountPercentage = round1(0.5 / float64(t.Count) * 100)
+			if base > 0 {
+				t.PricePerPiece = round2(base * (1 - 0.5/float64(t.Count)))
+				t.TotalPrice = round2(t.PricePerPiece * float64(t.Count))
+			}
 		case "DISCOUNT_WEIGHT":
 			// Price per `count` units of `unit` (e.g. per 100 GRAM voor €2.69).
 			t.Unit = l.Unit
@@ -286,6 +301,18 @@ func (it *bonusOfferItem) applyPricing(base float64, labels []discountLabel) {
 	}
 	if it.OriginalPrice > 0 && it.BonusPrice > 0 && it.BonusPrice < it.OriginalPrice {
 		it.DiscountPercentage = round1((1 - it.BonusPrice/it.OriginalPrice) * 100)
+	}
+	// Always surface a discount % for bonus products: if it could not be
+	// derived from prices (e.g. group '1+1 gratis' / '2e halve prijs' with no
+	// price), fall back to the deepest structural tier percentage.
+	if it.DiscountPercentage == 0 {
+		best := 0.0
+		for _, tr := range it.Tiers {
+			if tr.DiscountPercentage > best {
+				best = tr.DiscountPercentage
+			}
+		}
+		it.DiscountPercentage = best
 	}
 	// Koopzegel value on the price actually paid (the bonus price).
 	if it.BonusPrice > 0 {

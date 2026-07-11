@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	appie "github.com/gwillem/appie-go"
@@ -156,6 +157,75 @@ func fetchGroupProducts(ctx context.Context, c *appie.Client, segmentID, periodS
 		GlobalCache.Set(cacheKey, data, 30*time.Minute)
 	}
 	return products, nil
+}
+
+// resolveFromPrices enriches group offers (those with a bonus_segment_id) by
+// resolving the group's cheapest product. It handles two cases:
+//   - no single price (e.g. '1+1 gratis', '2e halve prijs'): sets a "vanaf"
+//     (from) price by applying the offer's discount percentage to the base.
+//   - a price but no discount % (e.g. '3 voor 6.00', 'voor 1.99'): derives the
+//     discount % from the base price so every offer shows a percentage.
+//
+// Runs concurrently; individual failures are ignored.
+func resolveFromPrices(ctx context.Context, c *appie.Client, offers []bonusOfferItem, periodStart, periodEnd string) {
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 5)
+	for i := range offers {
+		o := &offers[i]
+		// Individual products already carry van/voor/%; only groups need this.
+		if o.BonusSegmentID == "" {
+			continue
+		}
+		if o.BonusPrice > 0 && o.DiscountPercentage > 0 {
+			continue
+		}
+		wg.Add(1)
+		go func(o *bonusOfferItem) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			products, err := fetchGroupProducts(ctx, c, o.BonusSegmentID, periodStart, periodEnd)
+			if err != nil || len(products) == 0 {
+				return
+			}
+			base := 0.0
+			for _, p := range products {
+				pr := p.PriceNow
+				if pr <= 0 {
+					pr = p.PriceWas
+				}
+				if pr > 0 && (base == 0 || pr < base) {
+					base = pr
+				}
+			}
+			if base == 0 {
+				return
+			}
+
+			if o.BonusPrice == 0 {
+				// Price-less deal: only claim a "vanaf" price when the discount
+				// fraction is known (percentage/free deals), not for plain
+				// amount-off deals where we cannot compute the exact price.
+				if o.DiscountPercentage <= 0 {
+					return
+				}
+				o.OriginalPrice = base
+				o.BonusPrice = round2(base * (1 - o.DiscountPercentage/100))
+				o.PriceFrom = true
+			} else if o.DiscountPercentage == 0 && base > o.BonusPrice {
+				// Priced deal (n voor X / voor X) without a %: derive it from
+				// the cheapest normal price so a percentage is always shown.
+				o.OriginalPrice = base
+				o.DiscountPercentage = round1((1 - o.BonusPrice/base) * 100)
+			}
+			if o.BonusPrice > 0 {
+				o.KoopzegelDiscount = round2(o.BonusPrice * koopzegelRate)
+				o.PriceAfterKoopzegels = round2(o.BonusPrice - o.KoopzegelDiscount)
+			}
+		}(o)
+	}
+	wg.Wait()
 }
 
 // periodOffers returns the NATIONAL+SPOTLIGHT offers of a bonus period,
