@@ -228,6 +228,8 @@ func registerGetBonusOffers(s *server.MCPServer, deps Deps) {
 			return errResult(fmt.Sprintf("Failed to get bonus offers: %v", err)), nil
 		}
 		filtered := filterOffers(offers, query, limit)
+		// Resolve a "vanaf" price for group deals that carry no single price.
+		resolveFromPrices(ctx, c, filtered, current.BonusStartDate, current.BonusEndDate)
 		if req.GetString("format", "table") == "json" {
 			return jsonResult(filtered)
 		}
