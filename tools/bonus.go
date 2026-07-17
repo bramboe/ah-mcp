@@ -144,24 +144,6 @@ func euro(v float64) string {
 	return "€" + strings.Replace(fmt.Sprintf("%.2f", v), ".", ",", 1)
 }
 
-// perKg extracts the "€X" amount from AH's unit_price description
-// ("normale prijs per kg €14.26") and returns it as "€14,26/kg".
-func perKg(desc string) string {
-	if desc == "" {
-		return ""
-	}
-	idx := strings.LastIndex(desc, "€")
-	if idx < 0 {
-		return ""
-	}
-	amount := strings.TrimSpace(desc[idx:])
-	unit := "kg"
-	if strings.Contains(desc, "per l") || strings.Contains(desc, "per liter") {
-		unit = "l"
-	}
-	return strings.Replace(amount, ".", ",", 1) + "/" + unit
-}
-
 // cell sanitises a value for a markdown table cell.
 func cell(s string) string {
 	if s == "" {
@@ -176,16 +158,25 @@ func cell(s string) string {
 func renderOffersTable(offers []bonusOfferItem, numbered bool) string {
 	var b strings.Builder
 	if numbered {
-		b.WriteString("| # | Product | Inhoud | Van | Voor | Korting | Na zegels | Normaal | Deal | Status |\n")
-		b.WriteString("|--:|---|---|--:|--:|--:|--:|---|---|---|\n")
+		b.WriteString("| # | Product | Deal | Van | Voor | Korting | Na zegels | Status |\n")
+		b.WriteString("|--:|---|---|--:|--:|--:|--:|---|\n")
 	} else {
-		b.WriteString("| Product | Inhoud | Van | Voor | Korting | Na zegels | Normaal | Deal |\n")
-		b.WriteString("|---|---|--:|--:|--:|--:|---|---|\n")
+		b.WriteString("| Product | Deal | Van | Voor | Korting | Na zegels |\n")
+		b.WriteString("|---|---|--:|--:|--:|--:|\n")
 	}
 	for _, o := range offers {
 		korting := "—"
+		// The percentage is repeated inside the Deal cell on purpose: clients
+		// often re-render this table with fewer columns, and the deal text is
+		// the one column that always survives — so the discount goes with it.
+		deal := cell(o.BonusMechanism)
 		if o.DiscountPercentage > 0 {
 			korting = fmt.Sprintf("%.0f%%", o.DiscountPercentage)
+			if deal == "—" {
+				deal = korting + " korting"
+			} else {
+				deal = fmt.Sprintf("%s · −%s", deal, korting)
+			}
 		}
 		van := euro(o.OriginalPrice)
 		voor := euro(o.BonusPrice)
@@ -193,13 +184,12 @@ func renderOffersTable(offers []bonusOfferItem, numbered bool) string {
 			voor = "vanaf " + voor
 		}
 		na := euro(o.PriceAfterKoopzegels)
-		normaal := cell(perKg(o.UnitPrice))
 		if numbered {
-			fmt.Fprintf(&b, "| %d | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
-				o.Number, cell(o.Title), cell(o.Unit), van, voor, korting, na, normaal, cell(o.BonusMechanism), cell(o.ActivationStatus))
+			fmt.Fprintf(&b, "| %d | %s | %s | %s | %s | %s | %s | %s |\n",
+				o.Number, cell(o.Title), deal, van, voor, korting, na, cell(o.ActivationStatus))
 		} else {
-			fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s | %s | %s |\n",
-				cell(o.Title), cell(o.Unit), van, voor, korting, na, normaal, cell(o.BonusMechanism))
+			fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s |\n",
+				cell(o.Title), deal, van, voor, korting, na)
 		}
 	}
 	return b.String()
@@ -941,9 +931,10 @@ func registerGetPersonalBonusOffers(s *server.MCPServer, deps Deps) {
 				"Use this when the user asks about their personal offers or bonus box. "+
 				"Requires login. Each offer returns original_price, bonus_price, discount_percentage, "+
 				"koopzegel_discount and price_after_koopzegels (6.12% koopzegel value), plus unit and unit_price. "+
-				"By default this tool RETURNS A READY MARKDOWN TABLE with a # column (# | Product | Inhoud | Van | "+
-				"Voor | Korting | Na zegels | Normaal | Deal | Status) — show it to the user as-is; the user can then "+
-				"activate an offer with ah_activate_personal_bonus by its number. Pass format='json' for structured data.",
+				"By default this tool RETURNS A READY MARKDOWN TABLE with a # column (# | Product | Deal | Van | "+
+				"Voor | Korting | Na zegels | Status). Show it to the user EXACTLY as-is: keep every column — "+
+				"especially Korting — and do NOT drop columns or turn it into a list. The user can activate an "+
+				"offer with ah_activate_personal_bonus by its number. Pass format='json' for structured data.",
 		),
 		mcp.WithString("limit",
 			mcp.Description("Maximum number of offers to return (default 20)"),

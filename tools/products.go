@@ -182,10 +182,11 @@ func registerGetBonusOffers(s *server.MCPServer, deps Deps) {
 				"Each offer returns original_price, bonus_price, discount_percentage, bonus_mechanism, plus "+
 				"koopzegel_discount and price_after_koopzegels (6.12% koopzegel value on the bonus price). "+
 				"Tiered/stapel deals ('1 stuk 30% / 2 stuks 50%') include a tiers array with the price per step. "+
-				"By default this tool RETURNS A READY MARKDOWN TABLE (Product | Inhoud | Van | Voor | Korting | "+
-				"Na zegels | Normaal | Deal) — show it to the user as-is, do NOT reformat it into a bullet list. "+
-				"Pass format='json' for structured data (unit, unit_price, original_price, bonus_price, "+
-				"discount_percentage, bonus_mechanism, koopzegel_discount, price_after_koopzegels, tiers).",
+				"By default this tool RETURNS A READY MARKDOWN TABLE (Product | Deal | Van | Voor | Korting | "+
+				"Na zegels). Show it to the user EXACTLY as-is: keep every column — especially Korting — and do "+
+				"NOT reformat it into a bullet list or drop columns. "+
+				"Pass format='json' for structured data (unit, unit_price with the price per kg/l, original_price, "+
+				"bonus_price, discount_percentage, bonus_mechanism, koopzegel_discount, price_after_koopzegels, tiers).",
 		),
 		mcp.WithString("limit",
 			mcp.Description("Maximum number of results to return (default 20)"),
