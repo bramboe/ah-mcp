@@ -794,7 +794,8 @@ func registerUpdateCartItem(s *server.MCPServer, deps Deps) {
 		if quantity == 0 {
 			return mcp.NewToolResultText(fmt.Sprintf("Product %d removed from cart.", productID)), nil
 		}
-		return mcp.NewToolResultText(fmt.Sprintf("Product %d quantity set to %d.", productID, quantity)), nil
+		return mcp.NewToolResultText(withDupeWarning(ctx, c,
+			fmt.Sprintf("Product %d quantity set to %d.", productID, quantity))), nil
 	})
 }
 

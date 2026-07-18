@@ -256,7 +256,8 @@ Tokens are stored automatically at `/home/ah-mcp/.config/ah-mcp/tokens.json` —
 |---|---|
 | `ah_get_cart` | View current online cart: items, quantities, total price. |
 | `ah_get_cart_summary` | Cart totals only: item count, price, discount, delivery cost. |
-| `ah_update_cart_item` | Set quantity for a product in the cart (0 removes it). |
+| `ah_update_cart_item` | Set quantity for a product in the cart (0 removes it). Warns if the cart now holds a near-duplicate. |
+| `ah_find_duplicate_items` | Flag functionally-equal products (different ids, same thing — e.g. two brands of lasagne all'uovo) in the cart, an order, or the shopping list. |
 | `ah_remove_from_cart` | Remove a single product from the cart. |
 | `ah_clear_cart` | Remove all items from the cart. Requires `confirm=yes`. |
 
