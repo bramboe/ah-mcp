@@ -566,6 +566,8 @@ func registerGetBonusOffersByType(s *server.MCPServer, deps Deps) {
 				"ETOS (Etos deals), GALL (Gall & Gall deals), GALLCARD (Gall & Gall loyalty card). "+
 				"The available types depend on the account and week; when the requested type is not "+
 				"available the response lists which types are. "+
+				"By default RETURNS A READY MARKDOWN TABLE (Product | Deal | Van | Voor | Korting | Na zegels) — "+
+				"show it exactly as-is, keep every column. Pass format='json' for structured data. "+
 				"For the regular bonus use ah_get_bonus_offers; for personal offers ah_get_personal_bonus_offers.",
 		),
 		mcp.WithString("bonus_type",
@@ -580,6 +582,9 @@ func registerGetBonusOffersByType(s *server.MCPServer, deps Deps) {
 		),
 		mcp.WithString("query",
 			mcp.Description("Optional keyword filter (Dutch or English) applied client-side"),
+		),
+		mcp.WithString("format",
+			mcp.Description("'table' (default) returns a ready markdown table to show as-is; 'json' returns structured data"),
 		),
 	)
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -604,6 +609,7 @@ func registerGetBonusOffersByType(s *server.MCPServer, deps Deps) {
 		}
 		limit := req.GetInt("limit", 20)
 		query := req.GetString("query", "")
+		asJSON := req.GetString("format", "table") == "json"
 		start := time.Now()
 		today := time.Now().Format("2006-01-02")
 
@@ -645,16 +651,26 @@ func registerGetBonusOffersByType(s *server.MCPServer, deps Deps) {
 			})
 		}
 
+		render := func(offers []bonusOfferItem) (*mcp.CallToolResult, error) {
+			resolveFromPrices(ctx, c, offers, selected.BonusStartDate, selected.BonusEndDate)
+			shown := filterOffers(offers, query, limit)
+			if asJSON {
+				return jsonResult(map[string]any{
+					"available": true, "bonus_type": bonusType,
+					"period_start": selected.BonusStartDate, "period_end": selected.BonusEndDate,
+					"offers": shown,
+				})
+			}
+			header := fmt.Sprintf("%s-aanbiedingen (%s t/m %s):\n\n", bonusType, selected.BonusStartDate, selected.BonusEndDate)
+			return mcp.NewToolResultText(header + renderOffersTable(shown, false)), nil
+		}
+
 		cacheKey := fmt.Sprintf("bonus:type:%s:%s", bonusType, selected.BonusStartDate)
 		var offers []bonusOfferItem
 		if cached, ok := GlobalCache.Get(cacheKey); ok {
 			if err := unmarshalCached(cached, &offers); err == nil {
 				LogInfo("ah_get_bonus_offers_by_type", "cache_hit type=%s duration=%v", bonusType, time.Since(start))
-				return jsonResult(map[string]any{
-					"available": true, "bonus_type": bonusType,
-					"period_start": selected.BonusStartDate, "period_end": selected.BonusEndDate,
-					"offers": filterOffers(offers, query, limit),
-				})
+				return render(offers)
 			}
 		}
 
@@ -669,11 +685,7 @@ func registerGetBonusOffersByType(s *server.MCPServer, deps Deps) {
 		cacheOffers(cacheKey, offers)
 
 		LogInfo("ah_get_bonus_offers_by_type", "type=%s offers=%d duration=%v", bonusType, len(offers), time.Since(start))
-		return jsonResult(map[string]any{
-			"available": true, "bonus_type": bonusType,
-			"period_start": selected.BonusStartDate, "period_end": selected.BonusEndDate,
-			"offers": filterOffers(offers, query, limit),
-		})
+		return render(offers)
 	})
 }
 
@@ -821,13 +833,18 @@ func registerGetUpcomingBonusOffers(s *server.MCPServer, deps Deps) {
 				"Use this when the user asks about the bonus of next week / 'volgende week'. "+
 				"AH publishes the upcoming period a few days before it starts (typically from Friday); "+
 				"if it is not yet available the response says from which date it will be. "+
-				"Returns period_start, period_end and offers with the same fields as ah_get_bonus_offers.",
+				"By default RETURNS A READY MARKDOWN TABLE (Product | Deal | Van | Voor | Korting | Na zegels) — "+
+				"show it to the user exactly as-is, keep every column. Pass format='json' for structured data "+
+				"(period_start, period_end and offers with the same fields as ah_get_bonus_offers).",
 		),
 		mcp.WithString("limit",
 			mcp.Description("Maximum number of offers to return (default 20)"),
 		),
 		mcp.WithString("query",
 			mcp.Description("Optional keyword filter (Dutch or English) applied client-side, e.g. 'kaas', 'vlees', 'bier'"),
+		),
+		mcp.WithString("format",
+			mcp.Description("'table' (default) returns a ready markdown table to show as-is; 'json' returns structured data"),
 		),
 	)
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -844,6 +861,7 @@ func registerGetUpcomingBonusOffers(s *server.MCPServer, deps Deps) {
 
 		limit := req.GetInt("limit", 20)
 		query := req.GetString("query", "")
+		asJSON := req.GetString("format", "table") == "json"
 		start := time.Now()
 		today := time.Now().Format("2006-01-02")
 
@@ -885,17 +903,27 @@ func registerGetUpcomingBonusOffers(s *server.MCPServer, deps Deps) {
 			return jsonResult(resp)
 		}
 
+		render := func(offers []bonusOfferItem) (*mcp.CallToolResult, error) {
+			resolveFromPrices(ctx, c, offers, upcoming.BonusStartDate, upcoming.BonusEndDate)
+			shown := filterOffers(offers, query, limit)
+			if asJSON {
+				return jsonResult(response{
+					Available:   true,
+					PeriodStart: upcoming.BonusStartDate,
+					PeriodEnd:   upcoming.BonusEndDate,
+					Offers:      shown,
+				})
+			}
+			header := fmt.Sprintf("Bonus volgende week (%s t/m %s):\n\n", upcoming.BonusStartDate, upcoming.BonusEndDate)
+			return mcp.NewToolResultText(header + renderOffersTable(shown, false)), nil
+		}
+
 		cacheKey := fmt.Sprintf("bonus:upcoming:%s", upcoming.BonusStartDate)
 		var offers []bonusOfferItem
 		if cached, ok := GlobalCache.Get(cacheKey); ok {
 			if err := unmarshalCached(cached, &offers); err == nil {
 				LogInfo("ah_get_upcoming_bonus_offers", "cache_hit duration=%v", time.Since(start))
-				return jsonResult(response{
-					Available:   true,
-					PeriodStart: upcoming.BonusStartDate,
-					PeriodEnd:   upcoming.BonusEndDate,
-					Offers:      filterOffers(offers, query, limit),
-				})
+				return render(offers)
 			}
 		}
 
@@ -911,12 +939,7 @@ func registerGetUpcomingBonusOffers(s *server.MCPServer, deps Deps) {
 
 		LogInfo("ah_get_upcoming_bonus_offers", "period=%s offers=%d duration=%v",
 			upcoming.BonusStartDate, len(offers), time.Since(start))
-		return jsonResult(response{
-			Available:   true,
-			PeriodStart: upcoming.BonusStartDate,
-			PeriodEnd:   upcoming.BonusEndDate,
-			Offers:      filterOffers(offers, query, limit),
-		})
+		return render(offers)
 	})
 }
 
