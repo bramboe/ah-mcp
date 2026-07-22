@@ -106,6 +106,7 @@ type priceTier struct {
 type bonusOfferItem struct {
 	ID                 int     `json:"id,omitempty"`
 	BonusSegmentID     string  `json:"bonus_segment_id,omitempty"`
+	Category           string  `json:"category,omitempty"`
 	Title              string  `json:"title"`
 	Unit               string  `json:"unit,omitempty"`
 	UnitPrice          string  `json:"unit_price,omitempty"`
@@ -511,11 +512,42 @@ func collectTabOffers(ctx context.Context, c *appie.Client, period *bonusPeriodR
 			key := fmt.Sprintf("%d:%s:%s", o.ID, o.BonusSegmentID, o.Title)
 			if !seenOffer[key] {
 				seenOffer[key] = true
+				// Tag with the section (category) it first appeared in, so the
+				// listing can be grouped per category.
+				o.Category = descs[i]
 				offers = append(offers, o)
 			}
 		}
 	}
 	return offers, nil
+}
+
+// renderOffersGrouped renders offers grouped by category, one markdown table
+// per category with a "## <Category>" heading. Category order follows the
+// order offers first appear (which follows the AH section order). Offers with
+// no category fall into a trailing "Overig" group.
+func renderOffersGrouped(offers []bonusOfferItem) string {
+	var order []string
+	groups := map[string][]bonusOfferItem{}
+	for _, o := range offers {
+		cat := o.Category
+		if cat == "" {
+			cat = "Overig"
+		}
+		if _, ok := groups[cat]; !ok {
+			order = append(order, cat)
+		}
+		groups[cat] = append(groups[cat], o)
+	}
+	var b strings.Builder
+	for i, cat := range order {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "## %s\n\n", cat)
+		b.WriteString(renderOffersTable(groups[cat], false))
+	}
+	return b.String()
 }
 
 // cacheOffers stores an offer list in the global cache with the bonus TTL.
