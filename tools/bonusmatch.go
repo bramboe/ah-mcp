@@ -168,6 +168,11 @@ func fetchGroupProducts(ctx context.Context, c *appie.Client, segmentID, periodS
 //
 // Runs concurrently; individual failures are ignored.
 func resolveFromPrices(ctx context.Context, c *appie.Client, offers []bonusOfferItem, periodStart, periodEnd string) {
+	// Cap the number of group resolutions so a full-bonus listing (dozens of
+	// group deals across all categories) stays responsive; results are cached
+	// 30m, so subsequent calls fill in the rest.
+	const maxResolve = 60
+	resolved := 0
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 5)
 	for i := range offers {
@@ -179,6 +184,10 @@ func resolveFromPrices(ctx context.Context, c *appie.Client, offers []bonusOffer
 		if o.BonusPrice > 0 && o.DiscountPercentage > 0 {
 			continue
 		}
+		if resolved >= maxResolve {
+			break
+		}
+		resolved++
 		wg.Add(1)
 		go func(o *bonusOfferItem) {
 			defer wg.Done()

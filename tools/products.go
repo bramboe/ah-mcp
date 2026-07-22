@@ -182,11 +182,14 @@ func registerGetBonusOffers(s *server.MCPServer, deps Deps) {
 				"Each offer returns original_price, bonus_price, discount_percentage, bonus_mechanism, plus "+
 				"koopzegel_discount and price_after_koopzegels (6.12% koopzegel value on the bonus price). "+
 				"Tiered/stapel deals ('1 stuk 30% / 2 stuks 50%') include a tiers array with the price per step. "+
-				"By default this tool RETURNS A READY MARKDOWN TABLE (Product | Deal | Van | Voor | Korting | "+
-				"Na zegels). Show it to the user EXACTLY as-is: keep every column — especially Korting — and do "+
-				"NOT reformat it into a bullet list or drop columns. "+
-				"Pass format='json' for structured data (unit, unit_price with the price per kg/l, original_price, "+
-				"bonus_price, discount_percentage, bonus_mechanism, koopzegel_discount, price_after_koopzegels, tiers).",
+				"By default this returns the WHOLE week's bonus as READY MARKDOWN, split into one table per "+
+				"category, each under a '## <category>' heading (Groente, Fruit, Vlees, Vis, Zuivel, ...). "+
+				"Each table has columns Product | Deal | Van | Voor | Korting | Na zegels. Show it to the user "+
+				"EXACTLY as-is: keep the category headings and every column (especially Korting), and do NOT "+
+				"reformat it into bullet lists, drop columns, or re-group. Use the optional query to filter to a "+
+				"keyword, or limit to cap the number of offers. Pass format='json' for structured data (each offer "+
+				"has category, unit, unit_price, original_price, bonus_price, discount_percentage, bonus_mechanism, "+
+				"koopzegel_discount, price_after_koopzegels, tiers).",
 		),
 		mcp.WithString("limit",
 			mcp.Description("Maximum number of results to return (default 20)"),
@@ -210,12 +213,18 @@ func registerGetBonusOffers(s *server.MCPServer, deps Deps) {
 			return errResult(fmt.Sprintf("Client error: %v", err)), nil
 		}
 
-		limit := req.GetInt("limit", 20)
+		// Default: show the whole bonus (all categories). A limit only caps
+		// when the caller explicitly sets one.
+		limit := req.GetInt("limit", 0)
+		if limit <= 0 {
+			limit = 1000
+		}
 		query := req.GetString("query", "")
 
-		// Fetch the current period's NATIONAL + SPOTLIGHT offers via the shared
-		// section parser, which resolves tiered/stapel prices (bonus_price and
-		// per-step tiers) that the plain product endpoint drops.
+		// Fetch the current period's NATIONAL sections via the shared parser,
+		// which resolves tiered/stapel prices the plain product endpoint drops.
+		// NATIONAL sections ARE the categories (Groente, Fruit, Vlees, ...);
+		// SPOTLIGHT is a curated duplicate, so it is left out of the grouped view.
 		meta, err := fetchBonusMetadata(ctx, c)
 		if err != nil {
 			return errResult(fmt.Sprintf("Failed to get bonus metadata: %v", err)), nil
@@ -224,7 +233,7 @@ func registerGetBonusOffers(s *server.MCPServer, deps Deps) {
 		if current == nil {
 			return errResult("No active bonus period."), nil
 		}
-		offers, err := collectTabOffers(ctx, c, current, "NATIONAL", "SPOTLIGHT")
+		offers, err := collectTabOffers(ctx, c, current, "NATIONAL")
 		if err != nil {
 			return errResult(fmt.Sprintf("Failed to get bonus offers: %v", err)), nil
 		}
@@ -234,7 +243,7 @@ func registerGetBonusOffers(s *server.MCPServer, deps Deps) {
 		if req.GetString("format", "table") == "json" {
 			return jsonResult(filtered)
 		}
-		return mcp.NewToolResultText(renderOffersTable(filtered, false)), nil
+		return mcp.NewToolResultText(renderOffersGrouped(filtered)), nil
 	})
 }
 
